@@ -1,0 +1,22 @@
+{
+  "active_broker": "list(ibkr|schwab|public)",
+  "paper_trading": "bool",
+  "public_secret_key": "str?",
+  "public_account_id": "str?",
+  "public_preflight_enabled": "bool?",
+  "public_prefer_replace": "bool?",
+  "ibkr_host": "str",
+  "ibkr_port": "int",
+  "ibkr_client_id": "int",
+  "ibkr_username": "str?",
+  "ibkr_password": "password?",
+  "poll_interval_seconds": "int",
+  "heartbeat_interval_seconds": "int",
+  "health_log_interval_seconds": "int",
+  "anchor_buy_offset": "float",
+  "share_mismatch_mode": "list(halt|warn)",
+  "max_spread_pct": "float",
+  "google_sheet_id": "str",
+  "google_credentials_json": "str",
+  "enable_vnc": "bool"
+}

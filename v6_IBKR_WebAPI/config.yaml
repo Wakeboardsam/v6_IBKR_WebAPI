@@ -1,13 +1,52 @@
 name: "v6_IBKR_WebAPI"
-version: "1.0.0"
+version: "5.2.23"
 slug: "v6_ibkr_webapi"
-description: "A complete boilerplate Python bot add-on for Home Assistant."
+description: "Asyncio trading bot for TQQQ grid strategy on IBKR"
 arch:
   - amd64
   - aarch64
 startup: application
 boot: auto
 options:
-  greeting_message: "Hello from Home Assistant!"
+  active_broker: "ibkr"
+  paper_trading: true
+  public_secret_key: ""
+  public_account_id: ""
+  public_preflight_enabled: true
+  public_prefer_replace: true
+  ibkr_host: "127.0.0.1"
+  ibkr_port: 7497
+  ibkr_client_id: 1
+  poll_interval_seconds: 60
+  heartbeat_interval_seconds: 60
+  health_log_interval_seconds: 300
+  anchor_buy_offset: 0.0
+  share_mismatch_mode: "halt"
+  max_spread_pct: 0.5
+  google_sheet_id: ""
+  enable_vnc: false
+  google_credentials_json: ""
 schema:
-  greeting_message: "str"
+  active_broker: "list(ibkr|schwab|public)"
+  paper_trading: "bool"
+  public_secret_key: "str?"
+  public_account_id: "str?"
+  public_preflight_enabled: "bool?"
+  public_prefer_replace: "bool?"
+  ibkr_host: "str"
+  ibkr_port: "int"
+  ibkr_client_id: "int"
+  ibkr_username: "str?"
+  ibkr_password: "password?"
+  poll_interval_seconds: "int"
+  heartbeat_interval_seconds: "int"
+  health_log_interval_seconds: "int"
+  anchor_buy_offset: "float"
+  share_mismatch_mode: "list(halt|warn)"
+  max_spread_pct: "float"
+  google_sheet_id: "str"
+  google_credentials_json: "str"
+  enable_vnc: "bool"
+ports:
+  5900/tcp: 5900
+  6080/tcp: 6080
