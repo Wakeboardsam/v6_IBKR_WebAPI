@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "Parsing Home Assistant options..."
-export ENABLE_VNC=$(jq -r ".enable_vnc // false" /data/options.json)
+ENABLE_VNC=$(jq -r '.enable_vnc // false' /data/options.json)
 IBKR_USER=$(jq -r '.ibkr_username // empty' /data/options.json)
 IBKR_PASS=$(jq -r '.ibkr_password // empty' /data/options.json)
 export IBKR_PORT=$(jq -r '.ibkr_port // 7497' /data/options.json)
@@ -31,6 +31,12 @@ grep -q "BypassRedirectOrderWarning" /root/Jts/jts.ini || echo "BypassRedirectOr
 echo "Starting Xvfb..."
 Xvfb :99 -ac -screen 0 1024x768x16 &
 export DISPLAY=:99
+
+if [ "$ENABLE_VNC" = "true" ]; then
+    echo "Starting x11vnc..."
+    x11vnc -display :99 -forever -nopw -bg &
+fi
+
 echo "Starting IB Gateway via IBC..."
 export TWS_MAJOR_VRSN=1019
 export TWS_PATH=/root/Jts
