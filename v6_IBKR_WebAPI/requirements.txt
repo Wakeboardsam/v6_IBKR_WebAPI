@@ -1,1 +1,8 @@
-requests
+ib_insync
+pydantic
+gspread
+google-auth
+asyncio
+pytest
+pytest-asyncio
+publicdotcom-py>=0.1.10
