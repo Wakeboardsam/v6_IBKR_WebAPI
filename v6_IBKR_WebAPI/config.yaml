@@ -46,7 +46,6 @@ schema:
   max_spread_pct: "float"
   google_sheet_id: "str"
   google_credentials_json: "str"
-  enable_vnc: "bool"
 ports:
   5900/tcp: 5900
   6080/tcp: 6080
