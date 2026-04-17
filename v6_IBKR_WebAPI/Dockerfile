@@ -13,8 +13,6 @@ RUN apt-get update && apt-get install -y \
     libxi6 \
     gettext-base \
     x11vnc \
-    novnc \
-    websockify \
     xvfb \
     && rm -rf /var/lib/apt/lists/*
 
@@ -55,6 +53,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application source code and supervisord config
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY . .
+
+EXPOSE 5900
 
 # Set entrypoint
 RUN chmod +x run.sh
