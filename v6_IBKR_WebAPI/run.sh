@@ -33,6 +33,7 @@ Xvfb :99 -ac -screen 0 1024x768x16 &
 export DISPLAY=:99
 
 if [ "$ENABLE_VNC" = "true" ]; then
+    # VNC is intended ONLY for temporary private-network troubleshooting and IB Gateway GUI access.
     echo "Starting x11vnc..."
     x11vnc -display :99 -forever -nopw -bg &
 fi

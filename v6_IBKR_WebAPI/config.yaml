@@ -21,6 +21,7 @@ options:
   max_spread_pct: 0.5
   google_sheet_id: ""
   google_credentials_json: ""
+  # enable_vnc is intended ONLY for temporary private-network troubleshooting and IB Gateway GUI access.
   enable_vnc: false
 schema:
   active_broker: "list(ibkr|schwab)"
