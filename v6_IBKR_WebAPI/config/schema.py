@@ -18,3 +18,4 @@ class AppConfig(BaseModel):
     max_spread_pct: float = Field(default=0.5)
     google_sheet_id: str
     google_credentials_json: str
+    enable_vnc: bool = Field(default=False)
