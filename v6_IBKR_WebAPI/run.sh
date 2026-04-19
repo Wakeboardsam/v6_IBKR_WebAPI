@@ -21,6 +21,7 @@ OverrideTwsApiPort=${IBKR_PORT}
 AcceptIncomingConnectionAction=accept
 AcceptNonBrokerageAccountWarning=yes
 BypassOrderPrecautions=yes
+BypassRedirectOrderWarning=yes
 AllowBlindTrading=yes
 EOF
 echo "Injecting API bypass settings directly into jts.ini..."
