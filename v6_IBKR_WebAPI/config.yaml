@@ -1,5 +1,5 @@
 name: "v6_IBKR_WebAPI"
-version: "6.1.1"
+version: "6.1.2"
 slug: "tqqq_bot_v6"
 description: "Asyncio trading bot for TQQQ grid strategy on IBKR"
 arch:
