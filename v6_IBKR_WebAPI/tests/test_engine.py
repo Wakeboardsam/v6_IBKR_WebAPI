@@ -285,7 +285,7 @@ async def test_engine_boundary_regeneration(mock_broker, mock_sheet, config):
     assert not engine.order_manager.is_tracked("TEST-2")
     assert engine._is_weekend_gap is False
 
-    # 3. Test Weekend Skip: Friday 4:01 PM ET
+    # 3. Test Gap Session: Friday 4:01 PM ET
     # Friday is weekday 4
     engine.order_manager.track(12, OrderResult(order_id="TEST-3", status="submitted"), "BUY")
     mock_broker.cancel_order.reset_mock()
@@ -298,9 +298,24 @@ async def test_engine_boundary_regeneration(mock_broker, mock_sheet, config):
         await engine._check_daily_grid_regeneration()
 
     # It should still cancel and reset the previous day's orders,
-    # but it should also set _is_weekend_gap = True
+    # but it should NOT set _is_weekend_gap = True yet.
     mock_broker.cancel_order.assert_called_with("TEST-3")
     assert not engine.order_manager.is_tracked("TEST-3")
+    assert engine._is_weekend_gap is False
+
+    # 4. Test Weekend Skip: Friday 8:01 PM ET
+    engine.order_manager.track(13, OrderResult(order_id="TEST-4", status="submitted"), "BUY")
+    mock_broker.cancel_order.reset_mock()
+
+    fri_20_01 = datetime(2023, 10, 13, 20, 1, 0, tzinfo=tz)
+
+    with patch('engine.engine.datetime') as mock_dt:
+        mock_dt.now.return_value = fri_20_01
+        mock_dt.combine = datetime.combine
+        await engine._check_daily_grid_regeneration()
+
+    mock_broker.cancel_order.assert_called_with("TEST-4")
+    assert not engine.order_manager.is_tracked("TEST-4")
     assert engine._is_weekend_gap is True
 
 
