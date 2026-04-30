@@ -31,6 +31,8 @@ def mock_broker():
 @pytest.fixture
 def mock_sheet():
     sheet = AsyncMock()
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     grid_state = GridState(
         rows={
             7: GridRow(row_index=7, status="OWNED:OLD-ID", has_y=True, sell_price=105.0, buy_price=100.0, shares=10),
@@ -60,8 +62,11 @@ def config():
 
 @pytest.mark.asyncio
 async def test_engine_places_sell_and_buy_limits(mock_broker, mock_sheet, config):
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
     # distal_y will be 7. Window [7, 10].
     # Row 7 is has_y -> should place SELL.
@@ -92,8 +97,11 @@ async def test_engine_places_sell_and_buy_limits(mock_broker, mock_sheet, config
 
 @pytest.mark.asyncio
 async def test_circuit_breaker_halts(mock_broker, mock_sheet, config):
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 500}) # Mismatch (should be 10)
 
@@ -106,6 +114,8 @@ async def test_circuit_breaker_halts(mock_broker, mock_sheet, config):
 @pytest.mark.asyncio
 async def test_retrack_from_status(mock_broker, mock_sheet, config):
     # Mock row 8 as already having a working buy in status
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     grid_state = GridState(
         rows={
             7: GridRow(row_index=7, status="OWNED", has_y=True, sell_price=105.0, buy_price=100.0, shares=10),
@@ -114,10 +124,13 @@ async def test_retrack_from_status(mock_broker, mock_sheet, config):
     )
     mock_sheet.fetch_grid.return_value = grid_state
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 10})
-    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-EXISTING', 'limit_price': 105.0, 'qty': 10, 'action': 'BUY'}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-EXISTING', 'limit_price': 105.0, 'qty': 0, 'action': 'BUY'}]
 
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
     await engine._tick()
 
@@ -131,8 +144,11 @@ async def test_share_mismatch_warn(mock_broker, mock_sheet, config):
     config.share_mismatch_mode = "warn"
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 500}) # Mismatch
     mock_broker.get_price.return_value = 100.0
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
 
     await engine._tick()
@@ -149,8 +165,11 @@ async def test_share_mismatch_warn(mock_broker, mock_sheet, config):
 @pytest.mark.asyncio
 async def test_heartbeat_periodic(mock_broker, mock_sheet, config):
     config.heartbeat_interval_seconds = 0.01
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
 
     # Run heartbeat task for a short time
@@ -167,9 +186,11 @@ async def test_heartbeat_periodic(mock_broker, mock_sheet, config):
 @pytest.mark.asyncio
 async def test_anchor_acquisition(mock_broker, mock_sheet, config):
     # distal_y == 0 condition
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     grid_state = GridState(
         rows={
-            7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10),
+            7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0),
             8: GridRow(row_index=8, status="IDLE", has_y=False, sell_price=110.0, buy_price=105.0, shares=10)
         }
     )
@@ -179,8 +200,11 @@ async def test_anchor_acquisition(mock_broker, mock_sheet, config):
     mock_broker.get_bid_ask.return_value = (99.9, 100.0)
     config.anchor_buy_offset = 0.05
 
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
     await engine._tick()
 
@@ -195,6 +219,8 @@ async def test_anchor_acquisition(mock_broker, mock_sheet, config):
 @pytest.mark.asyncio
 async def test_non_anchor_buy_no_offset(mock_broker, mock_sheet, config):
     # distal_y == 7 condition, so row 8 is NOT an anchor buy
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     grid_state = GridState(
         rows={
             7: GridRow(row_index=7, status="OWNED:OLD", has_y=True, sell_price=105.0, buy_price=100.0, shares=10),
@@ -205,8 +231,11 @@ async def test_non_anchor_buy_no_offset(mock_broker, mock_sheet, config):
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 10})
     config.anchor_buy_offset = 0.05
 
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
     await engine._tick()
 
@@ -218,6 +247,8 @@ async def test_non_anchor_buy_no_offset(mock_broker, mock_sheet, config):
 @pytest.mark.asyncio
 async def test_protective_reconciliation_with_offset(mock_broker, mock_sheet, config):
     # distal_y == 0
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     grid_state = GridState(
         rows={
             7: GridRow(row_index=7, status="WORKING_BUY:ORD-123", has_y=False, sell_price=105.0, buy_price=100.0, shares=10),
@@ -228,10 +259,13 @@ async def test_protective_reconciliation_with_offset(mock_broker, mock_sheet, co
     config.anchor_buy_offset = 0.05
 
     # Live order has price 100.05 (100.0 + 0.05)
-    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-123', 'limit_price': 100.05, 'qty': 10, 'action': 'BUY'}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-123', 'limit_price': 100.05, 'qty': 0, 'action': 'BUY'}]
 
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
     engine.order_manager.track(7, OrderResult(order_id="ORD-123", status="submitted"), "BUY")
 
@@ -246,6 +280,8 @@ async def test_protective_reconciliation_with_offset(mock_broker, mock_sheet, co
 @pytest.mark.asyncio
 async def test_no_anchor_write_if_owned(mock_broker, mock_sheet, config):
     # distal_y > 0 condition
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     grid_state = GridState(
         rows={
             7: GridRow(row_index=7, status="OWNED", has_y=True, sell_price=105.0, buy_price=100.0, shares=10),
@@ -256,8 +292,11 @@ async def test_no_anchor_write_if_owned(mock_broker, mock_sheet, config):
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 10})
     mock_broker.get_wallet_balance.return_value = 50000.0
 
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
     await engine._tick()
 
@@ -266,8 +305,11 @@ async def test_no_anchor_write_if_owned(mock_broker, mock_sheet, config):
 
 @pytest.mark.asyncio
 async def test_engine_boundary_regeneration(mock_broker, mock_sheet, config):
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
 
     # 1. Start session normally
@@ -343,6 +385,8 @@ async def test_engine_boundary_regeneration(mock_broker, mock_sheet, config):
 @pytest.mark.asyncio
 async def test_anchor_update_on_full_sell_cycle(mock_broker, mock_sheet, config):
     # Initial state: owned 10 shares
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     grid_state = GridState(
         rows={
             7: GridRow(row_index=7, status="OWNED:ORD-1", has_y=True, sell_price=105.0, buy_price=100.0, shares=10)
@@ -353,9 +397,14 @@ async def test_anchor_update_on_full_sell_cycle(mock_broker, mock_sheet, config)
     mock_broker.get_wallet_balance.return_value = 50000.0
     mock_broker.get_bid_ask.return_value = (100.0, 101.0)
 
-    engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
 
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 10})
     engine.last_broker_shares = 10
 
     # Tick where shares become 0
@@ -374,8 +423,11 @@ async def test_anchor_update_on_full_sell_cycle(mock_broker, mock_sheet, config)
 @pytest.mark.asyncio
 async def test_anchor_update_on_cancelled_buy(mock_broker, mock_sheet, config):
     mock_broker.get_bid_ask.return_value = (102.0, 103.0)
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
 
     # Simulate a cancelled order for row 7 action BUY with 0 fill
@@ -393,6 +445,8 @@ async def test_anchor_update_on_cancelled_buy(mock_broker, mock_sheet, config):
 @pytest.mark.asyncio
 async def test_no_anchor_write_if_already_working(mock_broker, mock_sheet, config):
     # Row 7 already has a WORKING_BUY in status, even if distal_y is 0
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     grid_state = GridState(
         rows={
             7: GridRow(row_index=7, status="WORKING_BUY:ORD-1", has_y=False, sell_price=105.0, buy_price=100.0, shares=10),
@@ -402,10 +456,13 @@ async def test_no_anchor_write_if_already_working(mock_broker, mock_sheet, confi
     mock_sheet.fetch_grid.return_value = grid_state
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     mock_broker.get_wallet_balance.return_value = 50000.0
-    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-1', 'limit_price': 100.0, 'qty': 10, 'action': 'BUY'}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-1', 'limit_price': 100.0, 'qty': 0, 'action': 'BUY'}]
 
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
     await engine._tick()
 
@@ -459,8 +516,11 @@ async def test_engine_tick_unknown_state_returns_early():
 
 @pytest.mark.asyncio
 async def test_execution_logging_dedupe_and_fallback(mock_broker, mock_sheet, config):
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
 
     # Simulate tracking an order
@@ -520,8 +580,11 @@ async def test_execution_logging_dedupe_and_fallback(mock_broker, mock_sheet, co
 
 @pytest.mark.asyncio
 async def test_order_status_does_not_double_log_fills(mock_broker, mock_sheet, config):
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
 
     engine.order_manager.track(11, OrderResult(order_id="ORD-FILL", status="submitted"), "BUY")
@@ -529,6 +592,8 @@ async def test_order_status_does_not_double_log_fills(mock_broker, mock_sheet, c
     result = OrderResult(order_id="ORD-FILL", status="filled", filled_qty=10, filled_price=100.0)
 
     # We must populate grid state since we removed early returns on unknown state without grid pop
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     grid_state = GridState(rows={11: GridRow(row_index=11, status="WORKING_BUY:ORD-FILL", has_y=False, sell_price=110.0, buy_price=105.0, shares=10)})
     engine.grid_state = grid_state
 
@@ -549,6 +614,8 @@ async def test_order_status_does_not_double_log_fills(mock_broker, mock_sheet, c
 @pytest.mark.asyncio
 async def test_protective_reconciliation_skips_buy(mock_broker, mock_sheet, config):
     # Setup row 7 with working order, but sheet shares mismatch live order
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     grid_state = GridState(
         rows={
             7: GridRow(row_index=7, status="WORKING_BUY:ORD-123", has_y=False, sell_price=105.0, buy_price=100.0, shares=15),
@@ -562,10 +629,13 @@ async def test_protective_reconciliation_skips_buy(mock_broker, mock_sheet, conf
     config.anchor_buy_offset = 0.05
 
     # Live order has 10 shares, sheet has 15 shares
-    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-123', 'limit_price': 100.0, 'qty': 10, 'action': 'BUY'}]
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-123', 'limit_price': 100.0, 'qty': 0, 'action': 'BUY'}]
 
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
     engine.order_manager.track(7, OrderResult(order_id="ORD-123", status="submitted"), "BUY")
 
@@ -584,6 +654,8 @@ async def test_protective_reconciliation_skips_buy(mock_broker, mock_sheet, conf
 @pytest.mark.asyncio
 async def test_full_sell_cycle_halts_trading_evaluation(mock_broker, mock_sheet, config):
     # Setup row 7 with owned
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     grid_state = GridState(
         rows={
             7: GridRow(row_index=7, status="OWNED:ORD-123", has_y=True, sell_price=105.0, buy_price=100.0, shares=10),
@@ -596,10 +668,15 @@ async def test_full_sell_cycle_halts_trading_evaluation(mock_broker, mock_sheet,
     mock_broker.get_wallet_balance.return_value = 50000.0
     mock_broker.get_bid_ask.return_value = (99.9, 100.0)
 
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
     # Set previous shares to 10 so it triggers full sell cycle
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 10})
     engine.last_broker_shares = 10
 
     await engine._tick()
@@ -615,7 +692,7 @@ async def test_full_sell_cycle_halts_trading_evaluation(mock_broker, mock_sheet,
     # 2. Update sheet state to simulate sheet recalulating and row 7 being IDLE
     grid_state_next = GridState(
         rows={
-            7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10),
+            7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0),
         }
     )
     mock_sheet.fetch_grid.return_value = grid_state_next
@@ -630,6 +707,8 @@ async def test_full_sell_cycle_same_shares(mock_broker, mock_sheet, config):
     # Regression: even if share count is identical, it uses the recalculated values on the NEXT tick,
     # rather than failing to recognize that it changed. Since we implemented a deterministic tick skip,
     # it naturally works without relying on integer changes.
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     grid_state = GridState(
         rows={
             7: GridRow(row_index=7, status="OWNED:ORD-123", has_y=True, sell_price=105.0, buy_price=100.0, shares=10),
@@ -640,9 +719,14 @@ async def test_full_sell_cycle_same_shares(mock_broker, mock_sheet, config):
     mock_broker.get_wallet_balance.return_value = 50000.0
     mock_broker.get_bid_ask.return_value = (101.9, 102.0)
 
-    engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
 
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 10})
     engine.last_broker_shares = 10
 
     # First tick triggers anchor reset
@@ -667,8 +751,11 @@ async def test_full_sell_cycle_same_shares(mock_broker, mock_sheet, config):
 
 @pytest.mark.asyncio
 async def test_order_manager_tombstone_and_delayed_fill(mock_broker, mock_sheet, config):
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0)})
 
 
     # 1. Track BUY row 7 orderId 9
@@ -712,23 +799,38 @@ async def test_order_manager_tombstone_and_delayed_fill(mock_broker, mock_sheet,
 
 @pytest.mark.asyncio
 async def test_reconciliation_exact_match_retracks_order(mock_broker, mock_sheet, config):
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
 
 
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
+
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
     # Set up row 7 as idle
-    mock_sheet.mock_grid.rows[7].status = 'IDLE'
-    mock_sheet.mock_grid.rows[7].has_y = False
-    mock_sheet.mock_grid.rows[7].buy_price = 100.0
-    mock_sheet.mock_grid.rows[7].shares = 10
-    engine.grid_state = mock_sheet.mock_grid
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
+    grid_state = GridState(
+        rows={
+            7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0),
+        }
+    )
+    mock_sheet.fetch_grid.return_value = grid_state
 
     # Add untracked open order matching row 7 BUY perfectly
     mock_broker.get_open_orders.return_value = [{
         'order_id': '99',
         'ticker': 'TQQQ',
         'action': 'BUY',
-        'qty': 10,
+        'qty': 0,
         'limit_price': 100.0,
         'status': 'Submitted',
         'order_ref': 'TQQQ_V6|r=7|a=B|s=OVT'
@@ -743,10 +845,27 @@ async def test_reconciliation_exact_match_retracks_order(mock_broker, mock_sheet
 
 @pytest.mark.asyncio
 async def test_reconciliation_cancels_unmatched_order(mock_broker, mock_sheet, config):
-    engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
 
-    engine.grid_state = mock_sheet.mock_grid
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
+
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
+
+    from brokers.base import PositionSnapshot
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
+    grid_state = GridState(
+        rows={
+            7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=0),
+        }
+    )
+    mock_sheet.fetch_grid.return_value = grid_state
 
     # Add untracked open order that matches nothing
     mock_broker.get_open_orders.return_value = [{

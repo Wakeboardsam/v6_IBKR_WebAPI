@@ -295,8 +295,8 @@ class GridEngine:
             # (Especially important for the Gap session's GTC orders so they don't linger)
             await self._cancel_all_orders()
 
-            # Clear internally tracked orders.
-            self.order_manager = OrderManager()
+            # Clear internally tracked active orders but preserve tombstones for late fills
+            self.order_manager.tombstone_all_active(reason="session_regeneration")
 
             self._last_grid_regeneration = now_et
 
@@ -414,24 +414,39 @@ class GridEngine:
                     try:
                         parts = dict(p.split('=') for p in order_ref.split('|')[1:])
                         if 'r' in parts:
-                            matched_row = int(parts['r'])
+                            candidate_row_index = int(parts['r'])
+                            if candidate_row_index in self.grid_state.rows:
+                                row = self.grid_state.rows[candidate_row_index]
+                                # Validate row state matches action
+                                if order['action'] == 'BUY' and not row.has_y:
+                                    expected_price = row.buy_price
+                                    if row.row_index == 7 and distal_y == 0:
+                                        expected_price += self.config.anchor_buy_offset
+                                    if order['qty'] == row.shares and abs(order['limit_price'] - expected_price) < 0.001:
+                                        matched_row = row.row_index
+                                elif order['action'] == 'SELL' and row.has_y:
+                                    if order['qty'] == row.shares and abs(order['limit_price'] - row.sell_price) < 0.001:
+                                        matched_row = row.row_index
                     except Exception as e:
-                        logger.warning(f"Failed to parse orderRef {order_ref}: {e}")
+                        logger.warning(f"Failed to parse or validate orderRef {order_ref}: {e}")
 
                 # 2. Try to match by exact price, qty, action against the grid
                 if matched_row is None:
+                    candidates = []
                     for row in self.grid_state.rows.values():
                         if order['action'] == 'BUY' and not row.has_y:
                             expected_price = row.buy_price
                             if row.row_index == 7 and distal_y == 0:
                                 expected_price += self.config.anchor_buy_offset
                             if order['qty'] == row.shares and abs(order['limit_price'] - expected_price) < 0.001:
-                                matched_row = row.row_index
-                                break
+                                candidates.append(row.row_index)
                         elif order['action'] == 'SELL' and row.has_y:
                             if order['qty'] == row.shares and abs(order['limit_price'] - row.sell_price) < 0.001:
-                                matched_row = row.row_index
-                                break
+                                candidates.append(row.row_index)
+                    if len(candidates) == 1:
+                        matched_row = candidates[0]
+                    elif len(candidates) > 1:
+                        logger.warning(f"Reconciliation: Ambiguous fallback match for order {order_id} among rows {candidates}. Will not track.")
 
                 if matched_row is not None:
                     action = order['action']

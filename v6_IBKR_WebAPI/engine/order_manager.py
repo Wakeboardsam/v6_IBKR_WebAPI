@@ -54,6 +54,9 @@ class OrderManager:
             del self._tombstones[oid]
 
     def mark_filled(self, order_id: str) -> Tuple[Optional[Any], Optional[str]]:
+        # A filled order is permanently done; consume/remove any tombstone mapping as well.
+        if order_id in self._tombstones:
+            del self._tombstones[order_id]
         return self._remove_order(order_id, "filled")
 
     def mark_cancelled(self, order_id: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -81,6 +84,15 @@ class OrderManager:
 
     def get_tracked_order_ids(self) -> List[str]:
         return list(self._order_map.keys())
+
+    def tombstone_all_active(self, reason: str = "session_regeneration"):
+        """
+        Moves all actively tracked orders into tombstones and clears active mappings.
+        Used during session transitions to preserve history without keeping old orders active.
+        """
+        for order_id in list(self._order_map.keys()):
+            self._remove_order(order_id, reason)
+        logger.info(f"Tombstoned all active orders (Reason: {reason})")
 
     def is_tracked(self, order_id: str) -> bool:
         return order_id in self._order_map
