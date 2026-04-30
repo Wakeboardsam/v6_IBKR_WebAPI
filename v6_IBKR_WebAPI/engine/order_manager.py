@@ -1,5 +1,6 @@
 import logging
 from typing import Dict, Set, Tuple, List, Optional, Any, Callable
+from datetime import datetime, timedelta
 from brokers.base import OrderResult
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,10 @@ class OrderManager:
         self._order_map: Dict[str, Tuple[Any, str]] = {}
         # Mapping of row_index to action ('BUY' or 'SELL')
         self._row_actions: Dict[Any, str] = {}
+        # Tombstone history for cancelled/errored orders: order_id -> (row_index, action, reason, timestamp)
+        self._tombstones: Dict[str, Tuple[Any, str, str, datetime]] = {}
+        # TTL for tombstones (24 hours)
+        self.tombstone_ttl = timedelta(hours=24)
 
     def track(self, row_index: Any, order_result: OrderResult, action: str = None,
               broker: Optional[Any] = None, on_update: Optional[Callable] = None):
@@ -42,8 +47,27 @@ class OrderManager:
     def has_open_sell(self, row_index: Any) -> bool:
         return row_index in self._row_to_orders and self._row_actions.get(row_index) == "SELL"
 
+    def _prune_tombstones(self):
+        now = datetime.now()
+        expired = [oid for oid, data in self._tombstones.items() if now - data[3] > self.tombstone_ttl]
+        for oid in expired:
+            del self._tombstones[oid]
+
     def mark_filled(self, order_id: str) -> Tuple[Optional[Any], Optional[str]]:
-        return self._remove_order(order_id, "filled")
+        # Check active orders first
+        row_index, action = self._remove_order(order_id, "filled")
+
+        # If not found in active, it might be a delayed fill for a tombstoned order
+        if row_index is None and order_id in self._tombstones:
+            tombstone = self._tombstones.pop(order_id)
+            row_index, action = tombstone[0], tombstone[1]
+            logger.info(f"Order {order_id} filled from tombstone state (row {row_index}, action {action})")
+
+        # A filled order is permanently done; consume/remove any tombstone mapping as well.
+        if order_id in self._tombstones:
+            del self._tombstones[order_id]
+
+        return row_index, action
 
     def mark_cancelled(self, order_id: str) -> Tuple[Optional[Any], Optional[str]]:
         return self._remove_order(order_id, "cancelled")
@@ -51,6 +75,12 @@ class OrderManager:
     def _remove_order(self, order_id: str, reason: str) -> Tuple[Optional[Any], Optional[str]]:
         if order_id in self._order_map:
             row_index, action = self._order_map.pop(order_id)
+
+            # Save to tombstones to preserve historical mapping
+            if reason in ("cancelled", "error", "session_regeneration"):
+                self._tombstones[order_id] = (row_index, action, reason, datetime.now())
+                self._prune_tombstones()
+
             if row_index in self._row_to_orders:
                 self._row_to_orders[row_index].discard(order_id)
                 if not self._row_to_orders[row_index]:
@@ -65,10 +95,26 @@ class OrderManager:
     def get_tracked_order_ids(self) -> List[str]:
         return list(self._order_map.keys())
 
+    def tombstone_all_active(self, reason: str = "session_regeneration"):
+        """
+        Moves all actively tracked orders into tombstones and clears active mappings.
+        Used during session transitions to preserve history without keeping old orders active.
+        """
+        for order_id in list(self._order_map.keys()):
+            self._remove_order(order_id, reason)
+        logger.info(f"Tombstoned all active orders (Reason: {reason})")
+
     def is_tracked(self, order_id: str) -> bool:
         return order_id in self._order_map
+
+    def is_tombstoned(self, order_id: str) -> bool:
+        return order_id in self._tombstones
 
     def get_row_and_action(self, order_id: str) -> Tuple[Optional[Any], Optional[str]]:
         if order_id in self._order_map:
             return self._order_map[order_id]
+        elif order_id in self._tombstones:
+            tombstone = self._tombstones[order_id]
+            logger.info(f"Recovered mapping for order {order_id} from tombstones (row {tombstone[0]}, {tombstone[1]})")
+            return tombstone[0], tombstone[1]
         return None, None
