@@ -54,10 +54,20 @@ class OrderManager:
             del self._tombstones[oid]
 
     def mark_filled(self, order_id: str) -> Tuple[Optional[Any], Optional[str]]:
+        # Check active orders first
+        row_index, action = self._remove_order(order_id, "filled")
+
+        # If not found in active, it might be a delayed fill for a tombstoned order
+        if row_index is None and order_id in self._tombstones:
+            tombstone = self._tombstones.pop(order_id)
+            row_index, action = tombstone[0], tombstone[1]
+            logger.info(f"Order {order_id} filled from tombstone state (row {row_index}, action {action})")
+
         # A filled order is permanently done; consume/remove any tombstone mapping as well.
         if order_id in self._tombstones:
             del self._tombstones[order_id]
-        return self._remove_order(order_id, "filled")
+
+        return row_index, action
 
     def mark_cancelled(self, order_id: str) -> Tuple[Optional[Any], Optional[str]]:
         return self._remove_order(order_id, "cancelled")
@@ -67,7 +77,7 @@ class OrderManager:
             row_index, action = self._order_map.pop(order_id)
 
             # Save to tombstones to preserve historical mapping
-            if reason in ("cancelled", "error"):
+            if reason in ("cancelled", "error", "session_regeneration"):
                 self._tombstones[order_id] = (row_index, action, reason, datetime.now())
                 self._prune_tombstones()
 

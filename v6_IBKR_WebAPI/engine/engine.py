@@ -415,6 +415,13 @@ class GridEngine:
                         parts = dict(p.split('=') for p in order_ref.split('|')[1:])
                         if 'r' in parts:
                             candidate_row_index = int(parts['r'])
+
+                            # Validate parsed action against actual broker action
+                            parsed_action = 'BUY' if parts.get('a') == 'B' else ('SELL' if parts.get('a') == 'S' else None)
+                            if parsed_action and parsed_action != order['action']:
+                                logger.warning(f"orderRef action {parsed_action} does not match actual broker action {order['action']} for order {order_id}")
+                                continue
+
                             if candidate_row_index in self.grid_state.rows:
                                 row = self.grid_state.rows[candidate_row_index]
                                 # Validate row state matches action
@@ -715,8 +722,18 @@ class GridEngine:
                 if row_index == 7 and action == 'BUY':
                     filled_qty = result.filled_qty if result.filled_qty is not None else 0
                     if filled_qty == 0:
-                        logger.info("Anchor BUY cancelled/errored with 0 fill. Updating G7 anchor.")
-                        asyncio.create_task(self._write_fresh_anchor_ask())
+                        logger.info(f"Anchor BUY {order_id} cancelled/errored with 0 fill. Waiting grace period before writing G7 anchor.")
+
+                        async def _delayed_g7_write():
+                            await asyncio.sleep(5.5) # Wait slightly longer than 5s broker grace period
+                            # Only write if it's still tombstoned (meaning it didn't recover to Submitted/Filled)
+                            if self.order_manager.is_tombstoned(order_id):
+                                logger.info(f"Order {order_id} remains terminal after grace period. Updating G7 anchor.")
+                                await self._write_fresh_anchor_ask()
+                            else:
+                                logger.info(f"Order {order_id} is no longer tombstoned after grace period. Skipping G7 anchor write.")
+
+                        asyncio.create_task(_delayed_g7_write())
 
                 if result.status == 'error':
                     self.row_cooldowns[row_index] = datetime.now() + timedelta(minutes=5)
