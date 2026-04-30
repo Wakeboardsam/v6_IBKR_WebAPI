@@ -63,7 +63,8 @@ class BrokerBase(ABC):
         qty: int, limit_price: float,
         extended_hours: bool = True,
         on_update: Optional[Callable] = None,
-        order_id: Optional[str] = None
+        order_id: Optional[str] = None,
+        order_ref: Optional[str] = None
     ) -> OrderResult: ...
 
     @abstractmethod

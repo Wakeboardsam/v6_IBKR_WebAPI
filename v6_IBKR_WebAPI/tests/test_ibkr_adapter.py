@@ -511,3 +511,8 @@ async def test_positions_timeout_keeps_state_not_ready(mock_ib):
 
     assert adapter._broker_state_ready is False
     assert adapter._connected_not_ready_since is not None
+
+def test_dynamic_tif_logic():
+    from brokers.ibkr.order_builder import get_dynamic_tif
+    assert get_dynamic_tif('OVERNIGHT') == 'OVT'
+    assert get_dynamic_tif('SMART') == 'GTC'

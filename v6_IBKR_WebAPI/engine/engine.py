@@ -396,6 +396,54 @@ class GridEngine:
         open_orders = await self.broker.get_open_orders()
         broker_order_ids = {o['order_id'] for o in open_orders}
 
+        # 4.5 Robust Reconciliation: Find and handle untracked open orders
+        for order in open_orders:
+            order_id = order['order_id']
+            if not self.order_manager.is_tracked(order_id):
+                order_ref = order.get('order_ref', '')
+                ticker = order.get('ticker')
+
+                # Only reconcile orders for our target ticker
+                if ticker != TICKER:
+                    continue
+
+                matched_row = None
+
+                # 1. Try to match by orderRef (e.g. TQQQ_V6|r=7|a=B|s=OVT)
+                if order_ref and f"{TICKER}_V6" in order_ref:
+                    try:
+                        parts = dict(p.split('=') for p in order_ref.split('|')[1:])
+                        if 'r' in parts:
+                            matched_row = int(parts['r'])
+                    except Exception as e:
+                        logger.warning(f"Failed to parse orderRef {order_ref}: {e}")
+
+                # 2. Try to match by exact price, qty, action against the grid
+                if matched_row is None:
+                    for row in self.grid_state.rows.values():
+                        if order['action'] == 'BUY' and not row.has_y:
+                            expected_price = row.buy_price
+                            if row.row_index == 7 and distal_y == 0:
+                                expected_price += self.config.anchor_buy_offset
+                            if order['qty'] == row.shares and abs(order['limit_price'] - expected_price) < 0.001:
+                                matched_row = row.row_index
+                                break
+                        elif order['action'] == 'SELL' and row.has_y:
+                            if order['qty'] == row.shares and abs(order['limit_price'] - row.sell_price) < 0.001:
+                                matched_row = row.row_index
+                                break
+
+                if matched_row is not None:
+                    action = order['action']
+                    logger.info(f"Reconciliation: Untracked order {order_id} matched to row {matched_row} as {action}. Re-tracking.")
+                    self.order_manager.track(matched_row, OrderResult(order_id=order_id, status='submitted'), action,
+                                             broker=self.broker, on_update=self._handle_order_update)
+                    new_status = f"WORKING_BUY:{order_id}" if action == 'BUY' else f"WORKING_SELL:{order_id}"
+                    self._update_row_status_in_memory(matched_row, new_status)
+                else:
+                    logger.warning(f"Reconciliation: Found untracked, unmatched {TICKER} order {order_id} (Ref: {order_ref}). Cancelling it.")
+                    await self.broker.cancel_order(order_id)
+
         try:
             # 5. Grid Evaluation
             for row in self.grid_state.rows.values():
@@ -445,10 +493,16 @@ class GridEngine:
                                 self.order_manager.track(row.row_index, OrderResult(order_id=order_id, status='submitted'), 'SELL',
                                                     broker=self.broker, on_update=self._handle_order_update)
 
+                                from brokers.ibkr.order_builder import get_dynamic_exchange, get_dynamic_tif
+                                exchange = get_dynamic_exchange()
+                                tif = get_dynamic_tif(exchange)
+                                order_ref = f"{TICKER}_V6|r={row.row_index}|a=S|s={tif}"
+
                                 result = await self.broker.place_limit_order(
                                     ticker=TICKER, action='SELL', qty=row.shares,
                                     limit_price=row.sell_price, on_update=self._handle_order_update,
-                                    order_id=order_id
+                                    order_id=order_id,
+                                    order_ref=order_ref
                                 )
                                 if result.status == 'filled':
                                     self._update_row_status_in_memory(row.row_index, "IDLE")
@@ -509,10 +563,16 @@ class GridEngine:
                                 self.order_manager.track(row.row_index, OrderResult(order_id=order_id, status='submitted'), 'BUY',
                                                     broker=self.broker, on_update=self._handle_order_update)
 
+                                from brokers.ibkr.order_builder import get_dynamic_exchange, get_dynamic_tif
+                                exchange = get_dynamic_exchange()
+                                tif = get_dynamic_tif(exchange)
+                                order_ref = f"{TICKER}_V6|r={row.row_index}|a=B|s={tif}"
+
                                 result = await self.broker.place_limit_order(
                                     ticker=TICKER, action='BUY', qty=row.shares,
                                     limit_price=buy_price, on_update=self._handle_order_update,
-                                    order_id=order_id
+                                    order_id=order_id,
+                                    order_ref=order_ref
                                 )
                                 if result.status == 'filled':
                                     self._update_row_status_in_memory(row.row_index, f"OWNED:{result.order_id}")
@@ -578,8 +638,41 @@ class GridEngine:
         # Queue the fill to be written asynchronously
         asyncio.create_task(self.sheet.log_fill(exec_data))
 
+        # Authoritative state update: even if orderStatus is missed or late, an execution guarantees fill
+        if row_index is not None:
+            self.last_fill_time = datetime.now()
+
+            # Remove from order manager (whether active or tombstoned) as it's now definitively filled
+            self.order_manager.mark_filled(order_id)
+
+            if final_action == 'BUY':
+                new_status = f"OWNED:{order_id}"
+            else: # SELL
+                new_status = "IDLE"
+
+            self._update_row_status_in_memory(row_index, new_status)
+            asyncio.create_task(self._sync_to_sheet())
+            logger.info(f"Execution {exec_id} updated row state for order {order_id} at row {row_index} to {new_status}")
+
     def _handle_order_update(self, result: OrderResult):
         order_id = result.order_id
+
+        # Handle delayed Submitted/PreSubmitted events after Cancelled/Error
+        if result.status == 'submitted' and self.order_manager.is_tombstoned(order_id):
+            row_index, action = self.order_manager.get_row_and_action(order_id)
+            if row_index is not None:
+                logger.info(f"Restoring delayed order {order_id} to active tracking for row {row_index} ({action})")
+                # Remove from tombstones and start tracking actively again
+                if order_id in self.order_manager._tombstones:
+                    del self.order_manager._tombstones[order_id]
+
+                self.order_manager.track(row_index, OrderResult(order_id=order_id, status='submitted'), action,
+                                         broker=self.broker, on_update=self._handle_order_update)
+
+                new_status = f"WORKING_BUY:{order_id}" if action == 'BUY' else f"WORKING_SELL:{order_id}"
+                self._update_row_status_in_memory(row_index, new_status)
+                asyncio.create_task(self._sync_to_sheet())
+
         if result.status == 'filled':
             self.last_fill_time = datetime.now()
             row_index, action = self.order_manager.mark_filled(order_id)
