@@ -1,6 +1,7 @@
 #!/bin/bash
 echo "Parsing Home Assistant options..."
 ENABLE_VNC=$(jq -r '.enable_vnc // false' /data/options.json)
+VNC_PASS=$(jq -r '.vnc_password // empty' /data/options.json)
 IBKR_USER=$(jq -r '.ibkr_username // empty' /data/options.json)
 IBKR_PASS=$(jq -r '.ibkr_password // empty' /data/options.json)
 export IBKR_PORT=$(jq -r '.ibkr_port // 7497' /data/options.json)
@@ -35,8 +36,14 @@ export DISPLAY=:99
 
 if [ "$ENABLE_VNC" = "true" ]; then
     # VNC is intended ONLY for temporary private-network troubleshooting and IB Gateway GUI access.
-    echo "Starting x11vnc..."
-    x11vnc -display :99 -forever -nopw -bg &
+    if [ -n "$VNC_PASS" ]; then
+        echo "Starting x11vnc with password protection..."
+        mkdir -p /root/.vnc
+        x11vnc -storepasswd "$VNC_PASS" /root/.vnc/passwd
+        x11vnc -display :99 -forever -rfbauth /root/.vnc/passwd -bg &
+    else
+        echo "ERROR: VNC is enabled but vnc_password is not set. For security, x11vnc will not be started."
+    fi
 fi
 
 echo "Starting IB Gateway via IBC..."

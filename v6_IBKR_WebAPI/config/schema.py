@@ -19,3 +19,4 @@ class AppConfig(BaseModel):
     google_sheet_id: str
     google_credentials_json: str
     enable_vnc: bool = Field(default=False)
+    vnc_password: Optional[str] = Field(default=None)
