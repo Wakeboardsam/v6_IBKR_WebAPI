@@ -353,8 +353,7 @@ class IBKRAdapter(BrokerBase):
         qty: int, limit_price: float,
         extended_hours: bool = True,
         on_update: Optional[Callable] = None,
-        order_id: Optional[str] = None,
-        order_ref: Optional[str] = None
+        order_id: Optional[str] = None
     ) -> OrderResult:
         from brokers.ibkr.order_builder import get_dynamic_exchange, get_dynamic_tif
         exchange = get_dynamic_exchange()
@@ -367,9 +366,6 @@ class IBKRAdapter(BrokerBase):
         order.tif = tif
         order.outsideRth = True
         order.overridePercentageConstraints = True
-
-        if order_ref:
-            order.orderRef = order_ref
 
         if order_id:
             order.orderId = int(order_id)
@@ -385,21 +381,18 @@ class IBKRAdapter(BrokerBase):
         trade = self.ib.placeOrder(contract, order)
 
         # Wait for status to be 'Submitted', 'PreSubmitted', or terminal
-        # Add a grace period to wait for a successful state even if a terminal state (like Cancelled) or error is reached initially.
-        grace_period_max_duration = 5.0
-        start_time = datetime.now()
-
-        while trade.orderStatus.status not in ('Submitted', 'PreSubmitted', 'Filled'):
+        while not trade.isDone() and trade.orderStatus.status not in ('Submitted', 'PreSubmitted'):
             await asyncio.sleep(0.1)
-
-            # Check if we have spent too much time polling
-            if (datetime.now() - start_time).total_seconds() > grace_period_max_duration:
-                logger.warning(f"Order {final_order_id} grace period of {grace_period_max_duration}s expired. Final status: {trade.orderStatus.status}")
-                break
-
-            # If trade is technically "done", but we haven't hit the timeout, keep waiting in case it recovers
-            if trade.isDone():
-                pass # Continue looping until timeout to allow for delayed PreSubmitted/Filled
+            if order.orderId in self._last_error:
+                err_code, err_msg = self._last_error[order.orderId]
+                # If it's a known terminal error for the order
+                if err_code == 10329:
+                    return OrderResult(
+                        order_id=final_order_id,
+                        status='error',
+                        error_code=err_code,
+                        error_msg=err_msg
+                    )
 
         status = trade.orderStatus.status
         if status in ('Submitted', 'PreSubmitted'):
@@ -478,8 +471,7 @@ class IBKRAdapter(BrokerBase):
                     'action': trade.order.action,
                     'qty': trade.order.totalQuantity,
                     'limit_price': trade.order.lmtPrice,
-                    'status': trade.orderStatus.status,
-                    'order_ref': trade.order.orderRef
+                    'status': trade.orderStatus.status
                 })
         return orders
 
