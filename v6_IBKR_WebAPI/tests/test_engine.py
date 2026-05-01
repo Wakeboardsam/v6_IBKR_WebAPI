@@ -182,9 +182,15 @@ async def test_anchor_acquisition(mock_broker, mock_sheet, config):
     engine = GridEngine(mock_broker, mock_sheet, config)
     engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
 
+    # Tick 1: Should write anchor ask to G7 because it's flat and pending is False
+    await engine._tick()
+    mock_sheet.write_anchor_ask.assert_called_once_with(100.0)
+    mock_broker.place_limit_order.assert_not_called()
+
+    # Tick 2: Should NOT write anchor ask again, but SHOULD place the buy order
+    mock_sheet.write_anchor_ask.reset_mock()
     await engine._tick()
 
-    # Bug 1 Fix: Should NOT write anchor ask to G7 on buy placement
     mock_sheet.write_anchor_ask.assert_not_called()
 
     # Should place buy order at price from sheet + offset

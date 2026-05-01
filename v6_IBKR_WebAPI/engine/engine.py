@@ -35,6 +35,7 @@ class GridEngine:
         tz = zoneinfo.ZoneInfo("America/New_York")
         self._last_grid_regeneration = datetime.min.replace(tzinfo=tz)
         self._is_weekend_gap = False
+        self.anchor_refresh_pending = False
 
     async def run(self):
         logger.info("Starting GridEngine run loop")
@@ -183,20 +184,26 @@ class GridEngine:
             except asyncio.TimeoutError:
                 pass
 
-    async def _write_fresh_anchor_ask(self):
+    async def _write_fresh_anchor_ask(self, ask_price: Optional[float] = None) -> bool:
         """
-        Fetches the current ask price and writes it to G7.
+        Fetches the current ask price (or uses the provided one) and writes it to G7.
         Used to reset the anchor and trigger a sheet recalculation.
+        Returns True if successful, False otherwise.
         """
         try:
-            bid, ask = await self.broker.get_bid_ask(TICKER)
-            if ask > 0:
-                await self.sheet.write_anchor_ask(ask)
-                logger.info(f"Fresh anchor ask {ask} written to G7.")
+            if ask_price is None:
+                bid, ask_price = await self.broker.get_bid_ask(TICKER)
+
+            if ask_price > 0:
+                await self.sheet.write_anchor_ask(ask_price)
+                logger.info(f"Fresh anchor ask {ask_price} written to G7.")
+                return True
             else:
                 logger.warning("Could not write fresh anchor ask: ask price is 0.")
+                return False
         except Exception as e:
             logger.error(f"Failed to write fresh anchor ask: {e}")
+            return False
 
     async def _heartbeat_periodic(self):
         while not self._shutdown_event.is_set():
@@ -357,10 +364,15 @@ class GridEngine:
         positions = snapshot.positions
         broker_shares = positions.get(TICKER, 0)
 
+        if broker_shares > 0:
+            self.anchor_refresh_pending = False
+
         # Bug 1 Fix: Write G7 only after a full sell cycle complete
         if self.last_broker_shares > 0 and broker_shares == 0:
             logger.info("Full sell cycle detected (shares went to 0). Updating G7 anchor.")
-            await self._write_fresh_anchor_ask()
+            success = await self._write_fresh_anchor_ask()
+            if success:
+                self.anchor_refresh_pending = True
 
             # Immediately update last_broker_shares to prevent triggering again
             self.last_broker_shares = broker_shares
@@ -504,6 +516,8 @@ class GridEngine:
 
                     if in_window:
                         if row.has_y:
+                            if row.row_index == 7:
+                                self.anchor_refresh_pending = False
                             # Expect active SELL order
                             if not self.order_manager.has_open_sell(row.row_index):
                                 if getattr(self, '_is_weekend_gap', False):
@@ -563,19 +577,36 @@ class GridEngine:
                                                 break # Will continue with the outer loop since the outer `if not self.order_manager.has_open_buy` will be false and we do nothing else
 
                             # Expect active BUY order
-                            if not self.order_manager.has_open_buy(row.row_index):
+                            if self.order_manager.has_open_buy(row.row_index):
+                                if row.row_index == 7:
+                                    self.anchor_refresh_pending = False
+                            else:
                                 buy_price = row.buy_price
 
                                 if row.row_index == 7 and distal_y == 0:
                                     # Anchor acquisition!
-                                    buy_price += self.config.anchor_buy_offset
-                                    logger.info("Anchor acquisition condition met for row 7")
-                                    # We check spread using a fresh ask but we DO NOT write it to G7 here.
-                                    # We use the existing buy_price from the sheet (calculated from current G7).
+
+                                    # ALWAYS validate quote on anchor placement
                                     bid, ask = await self.broker.get_bid_ask(TICKER)
-                                    if self.spread_guard.is_too_wide(bid, ask):
+                                    if bid <= 0 or ask <= 0 or self.spread_guard.is_too_wide(bid, ask):
+                                        logger.warning(f"Bad quote (bid={bid}, ask={ask}) or spread too wide. Skipping anchor placement this tick.")
                                         continue
 
+                                    if broker_shares == 0:
+                                        if not self.anchor_refresh_pending:
+                                            logger.info("Anchor acquisition condition met for row 7 (startup/flat refresh)")
+                                            logger.info(f"Writing fresh ask {ask} to G7. Deferring anchor placement to next tick.")
+                                            success = await self._write_fresh_anchor_ask(ask)
+                                            if success:
+                                                self.anchor_refresh_pending = True
+                                            else:
+                                                logger.error("Failed to write fresh anchor ask. Will not proceed with stale anchor BUY.")
+                                            continue
+                                        else:
+                                            logger.info("Anchor refresh already pending and quote is valid, proceeding to place anchor BUY with recalculated sheet values.")
+                                            # We don't write G7 again, we let the order placement proceed
+
+                                    buy_price += self.config.anchor_buy_offset
                                     logger.info(f"Placing anchor BUY for row 7 at {buy_price} (including offset {self.config.anchor_buy_offset})")
                                 else:
                                     logger.info(f"Placing missing BUY for empty row {row.row_index}")
@@ -596,6 +627,9 @@ class GridEngine:
                                     order_id=order_id,
                                     order_ref=order_ref
                                 )
+                                if result.status in ('filled', 'submitted') and row.row_index == 7:
+                                    self.anchor_refresh_pending = False
+
                                 if result.status == 'filled':
                                     self._update_row_status_in_memory(row.row_index, f"OWNED:{result.order_id}")
                                 elif result.status == 'submitted':
