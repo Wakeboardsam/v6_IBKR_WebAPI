@@ -52,6 +52,7 @@ async def test_startup_flat_refresh(mock_broker, mock_sheet, mock_config):
     engine = GridEngine(broker=mock_broker, sheet=mock_sheet, config=mock_config)
     engine.last_broker_shares = 0 # emulate already flat
     engine._is_weekend_gap = False
+    mock_broker.get_bid_ask.return_value = (49.95, 50.05)
 
     await engine._tick()
 
@@ -68,6 +69,7 @@ async def test_next_tick_after_refresh(mock_broker, mock_sheet, mock_config):
     engine.last_broker_shares = 0
     engine.anchor_refresh_pending = True
     engine._is_weekend_gap = False
+    mock_broker.get_bid_ask.return_value = (49.95, 50.05)
 
     await engine._tick()
 
@@ -128,3 +130,42 @@ async def test_bad_quote_spread(mock_broker, mock_sheet, mock_config):
     mock_sheet.write_anchor_ask.assert_not_called()
     mock_broker.place_limit_order.assert_not_called()
     assert engine.anchor_refresh_pending is False
+
+@pytest.mark.asyncio
+async def test_pending_true_but_bad_quote(mock_broker, mock_sheet, mock_config):
+    # Test: anchor_refresh_pending=True + bad/wide spread => no BUY, pending remains True
+    engine = GridEngine(broker=mock_broker, sheet=mock_sheet, config=mock_config)
+    engine.last_broker_shares = 0
+    engine.anchor_refresh_pending = True
+    engine._is_weekend_gap = False
+
+    mock_broker.get_bid_ask.return_value = (40.0, 50.0) # wide spread
+
+    await engine._tick()
+
+    # Should not write G7 again
+    mock_sheet.write_anchor_ask.assert_not_called()
+    # Should not place BUY
+    mock_broker.place_limit_order.assert_not_called()
+    # Pending should remain True
+    assert engine.anchor_refresh_pending is True
+
+@pytest.mark.asyncio
+async def test_g7_write_failure(mock_broker, mock_sheet, mock_config):
+    # Test: G7 write failure => pending does not become True, no stale anchor BUY is placed
+    engine = GridEngine(broker=mock_broker, sheet=mock_sheet, config=mock_config)
+    engine.last_broker_shares = 0
+    engine.anchor_refresh_pending = False
+    engine._is_weekend_gap = False
+
+    mock_broker.get_bid_ask.return_value = (49.95, 50.05)
+    mock_sheet.write_anchor_ask.side_effect = Exception("Google Sheets API error")
+
+    await engine._tick()
+
+    # Should attempt to write G7
+    mock_sheet.write_anchor_ask.assert_called_once_with(50.05)
+    # But because it failed, pending should remain False
+    assert engine.anchor_refresh_pending is False
+    # And we shouldn't place a BUY
+    mock_broker.place_limit_order.assert_not_called()

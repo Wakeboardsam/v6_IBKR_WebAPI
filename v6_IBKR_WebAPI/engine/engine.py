@@ -184,10 +184,11 @@ class GridEngine:
             except asyncio.TimeoutError:
                 pass
 
-    async def _write_fresh_anchor_ask(self, ask_price: Optional[float] = None):
+    async def _write_fresh_anchor_ask(self, ask_price: Optional[float] = None) -> bool:
         """
         Fetches the current ask price (or uses the provided one) and writes it to G7.
         Used to reset the anchor and trigger a sheet recalculation.
+        Returns True if successful, False otherwise.
         """
         try:
             if ask_price is None:
@@ -196,10 +197,13 @@ class GridEngine:
             if ask_price > 0:
                 await self.sheet.write_anchor_ask(ask_price)
                 logger.info(f"Fresh anchor ask {ask_price} written to G7.")
+                return True
             else:
                 logger.warning("Could not write fresh anchor ask: ask price is 0.")
+                return False
         except Exception as e:
             logger.error(f"Failed to write fresh anchor ask: {e}")
+            return False
 
     async def _heartbeat_periodic(self):
         while not self._shutdown_event.is_set():
@@ -366,8 +370,9 @@ class GridEngine:
         # Bug 1 Fix: Write G7 only after a full sell cycle complete
         if self.last_broker_shares > 0 and broker_shares == 0:
             logger.info("Full sell cycle detected (shares went to 0). Updating G7 anchor.")
-            await self._write_fresh_anchor_ask()
-            self.anchor_refresh_pending = True
+            success = await self._write_fresh_anchor_ask()
+            if success:
+                self.anchor_refresh_pending = True
 
             # Immediately update last_broker_shares to prevent triggering again
             self.last_broker_shares = broker_shares
@@ -580,20 +585,25 @@ class GridEngine:
 
                                 if row.row_index == 7 and distal_y == 0:
                                     # Anchor acquisition!
+
+                                    # ALWAYS validate quote on anchor placement
+                                    bid, ask = await self.broker.get_bid_ask(TICKER)
+                                    if bid <= 0 or ask <= 0 or self.spread_guard.is_too_wide(bid, ask):
+                                        logger.warning(f"Bad quote (bid={bid}, ask={ask}) or spread too wide. Skipping anchor placement this tick.")
+                                        continue
+
                                     if broker_shares == 0:
                                         if not self.anchor_refresh_pending:
                                             logger.info("Anchor acquisition condition met for row 7 (startup/flat refresh)")
-                                            bid, ask = await self.broker.get_bid_ask(TICKER)
-                                            if bid <= 0 or ask <= 0 or self.spread_guard.is_too_wide(bid, ask):
-                                                logger.warning(f"Bad quote (bid={bid}, ask={ask}) or spread too wide. Skipping anchor placement this tick.")
-                                                continue
-
                                             logger.info(f"Writing fresh ask {ask} to G7. Deferring anchor placement to next tick.")
-                                            await self._write_fresh_anchor_ask(ask)
-                                            self.anchor_refresh_pending = True
+                                            success = await self._write_fresh_anchor_ask(ask)
+                                            if success:
+                                                self.anchor_refresh_pending = True
+                                            else:
+                                                logger.error("Failed to write fresh anchor ask. Will not proceed with stale anchor BUY.")
                                             continue
                                         else:
-                                            logger.info("Anchor refresh already pending, proceeding to place anchor BUY with recalculated sheet values.")
+                                            logger.info("Anchor refresh already pending and quote is valid, proceeding to place anchor BUY with recalculated sheet values.")
                                             # We don't write G7 again, we let the order placement proceed
 
                                     buy_price += self.config.anchor_buy_offset
