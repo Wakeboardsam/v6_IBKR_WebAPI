@@ -33,10 +33,10 @@ def get_dynamic_exchange() -> str:
 
 def get_dynamic_tif(exchange: str) -> str:
     """
-    Returns 'OVT' (Overnight) for the OVERNIGHT exchange,
+    Returns 'OND' (Overnight + Day) for the OVERNIGHT exchange,
     otherwise returns 'GTC'.
     """
-    return 'OVT' if exchange == 'OVERNIGHT' else 'GTC'
+    return 'OND' if exchange == 'OVERNIGHT' else 'GTC'
 
 def build_bracket_order(ib: IB, ticker: str, action: str, qty: int, limit_price: float, profit_price: float):
     """

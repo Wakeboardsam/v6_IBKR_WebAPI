@@ -1,4 +1,3 @@
-import unittest.mock
 from brokers.base import PositionSnapshot
 import pytest
 import asyncio
@@ -61,8 +60,6 @@ def config():
 @pytest.mark.asyncio
 async def test_engine_places_sell_and_buy_limits(mock_broker, mock_sheet, config):
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
     # distal_y will be 7. Window [7, 10].
     # Row 7 is has_y -> should place SELL.
     # Row 8 is NOT has_y and 8 > 7 -> should place BUY.
@@ -93,8 +90,6 @@ async def test_engine_places_sell_and_buy_limits(mock_broker, mock_sheet, config
 @pytest.mark.asyncio
 async def test_circuit_breaker_halts(mock_broker, mock_sheet, config):
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 500}) # Mismatch (should be 10)
 
     await engine._tick()
@@ -117,8 +112,6 @@ async def test_retrack_from_status(mock_broker, mock_sheet, config):
     mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-EXISTING', 'limit_price': 105.0, 'qty': 10, 'action': 'BUY'}]
 
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
     await engine._tick()
 
     # Should NOT place new order for row 8
@@ -132,8 +125,6 @@ async def test_share_mismatch_warn(mock_broker, mock_sheet, config):
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 500}) # Mismatch
     mock_broker.get_price.return_value = 100.0
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
 
     await engine._tick()
 
@@ -150,8 +141,6 @@ async def test_share_mismatch_warn(mock_broker, mock_sheet, config):
 async def test_heartbeat_periodic(mock_broker, mock_sheet, config):
     config.heartbeat_interval_seconds = 0.01
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
 
     # Run heartbeat task for a short time
     task = asyncio.create_task(engine._heartbeat_periodic())
@@ -180,22 +169,14 @@ async def test_anchor_acquisition(mock_broker, mock_sheet, config):
     config.anchor_buy_offset = 0.05
 
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
-    # Tick 1: Should write anchor ask to G7 because it's flat and pending is False
-    await engine._tick()
-    mock_sheet.write_anchor_ask.assert_called_once_with(100.0)
-    mock_broker.place_limit_order.assert_not_called()
-
-    # Tick 2: Should NOT write anchor ask again, but SHOULD place the buy order
-    mock_sheet.write_anchor_ask.reset_mock()
     await engine._tick()
 
+    # Bug 1 Fix: Should NOT write anchor ask to G7 on buy placement
     mock_sheet.write_anchor_ask.assert_not_called()
 
     # Should place buy order at price from sheet + offset
     mock_broker.place_limit_order.assert_any_call(
-        ticker="TQQQ", action="BUY", qty=10, limit_price=100.05, on_update=engine._handle_order_update, order_id="ORD-123", order_ref=unittest.mock.ANY
+        ticker="TQQQ", action="BUY", qty=10, limit_price=100.05, on_update=engine._handle_order_update, order_id="ORD-123"
     )
 
 @pytest.mark.asyncio
@@ -212,13 +193,11 @@ async def test_non_anchor_buy_no_offset(mock_broker, mock_sheet, config):
     config.anchor_buy_offset = 0.05
 
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
     await engine._tick()
 
     # Should place buy order for row 8 at exact sheet price
     mock_broker.place_limit_order.assert_any_call(
-        ticker="TQQQ", action="BUY", qty=10, limit_price=105.0, on_update=engine._handle_order_update, order_id=mock_broker.get_next_order_id.return_value, order_ref=unittest.mock.ANY
+        ticker="TQQQ", action="BUY", qty=10, limit_price=105.0, on_update=engine._handle_order_update, order_id=mock_broker.get_next_order_id.return_value
     )
 
 @pytest.mark.asyncio
@@ -237,8 +216,6 @@ async def test_protective_reconciliation_with_offset(mock_broker, mock_sheet, co
     mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-123', 'limit_price': 100.05, 'qty': 10, 'action': 'BUY'}]
 
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
     engine.order_manager.track(7, OrderResult(order_id="ORD-123", status="submitted"), "BUY")
 
     await engine._tick()
@@ -263,8 +240,6 @@ async def test_no_anchor_write_if_owned(mock_broker, mock_sheet, config):
     mock_broker.get_wallet_balance.return_value = 50000.0
 
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
     await engine._tick()
 
     # Should NOT write anchor ask to G7
@@ -273,8 +248,6 @@ async def test_no_anchor_write_if_owned(mock_broker, mock_sheet, config):
 @pytest.mark.asyncio
 async def test_engine_boundary_regeneration(mock_broker, mock_sheet, config):
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
 
     # 1. Start session normally
     tz = zoneinfo.ZoneInfo("America/New_York")
@@ -312,7 +285,7 @@ async def test_engine_boundary_regeneration(mock_broker, mock_sheet, config):
     assert not engine.order_manager.is_tracked("TEST-2")
     assert engine._is_weekend_gap is False
 
-    # 3. Test Gap Session: Friday 4:01 PM ET
+    # 3. Test Weekend Skip: Friday 4:01 PM ET
     # Friday is weekday 4
     engine.order_manager.track(12, OrderResult(order_id="TEST-3", status="submitted"), "BUY")
     mock_broker.cancel_order.reset_mock()
@@ -325,24 +298,9 @@ async def test_engine_boundary_regeneration(mock_broker, mock_sheet, config):
         await engine._check_daily_grid_regeneration()
 
     # It should still cancel and reset the previous day's orders,
-    # but it should NOT set _is_weekend_gap = True yet.
+    # but it should also set _is_weekend_gap = True
     mock_broker.cancel_order.assert_called_with("TEST-3")
     assert not engine.order_manager.is_tracked("TEST-3")
-    assert engine._is_weekend_gap is False
-
-    # 4. Test Weekend Skip: Friday 8:01 PM ET
-    engine.order_manager.track(13, OrderResult(order_id="TEST-4", status="submitted"), "BUY")
-    mock_broker.cancel_order.reset_mock()
-
-    fri_20_01 = datetime(2023, 10, 13, 20, 1, 0, tzinfo=tz)
-
-    with patch('engine.engine.datetime') as mock_dt:
-        mock_dt.now.return_value = fri_20_01
-        mock_dt.combine = datetime.combine
-        await engine._check_daily_grid_regeneration()
-
-    mock_broker.cancel_order.assert_called_with("TEST-4")
-    assert not engine.order_manager.is_tracked("TEST-4")
     assert engine._is_weekend_gap is True
 
 
@@ -360,8 +318,6 @@ async def test_anchor_update_on_full_sell_cycle(mock_broker, mock_sheet, config)
     mock_broker.get_bid_ask.return_value = (100.0, 101.0)
 
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
     engine.last_broker_shares = 10
 
     # Tick where shares become 0
@@ -381,25 +337,18 @@ async def test_anchor_update_on_full_sell_cycle(mock_broker, mock_sheet, config)
 async def test_anchor_update_on_cancelled_buy(mock_broker, mock_sheet, config):
     mock_broker.get_bid_ask.return_value = (102.0, 103.0)
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
 
     # Simulate a cancelled order for row 7 action BUY with 0 fill
     result = OrderResult(order_id="ORD-7", status="cancelled", filled_qty=0)
     engine.order_manager.track(7, OrderResult(order_id="ORD-7", status="submitted"), "BUY")
 
-    # Override asyncio.sleep locally for this test so we don't actually wait 5.5s
-    original_sleep = __import__("asyncio").sleep
-    async def mock_sleep(delay, result=None):
-        if delay == 5.5:
-            return
-        return await original_sleep(delay, result)
+    engine._handle_order_update(result)
 
-    import unittest.mock
-    with unittest.mock.patch('asyncio.sleep', new=mock_sleep):
-        engine._handle_order_update(result)
-        # Yield to let the async task run
-        await original_sleep(0.01)
-        mock_sheet.write_anchor_ask.assert_called_with(103.0)
+    # Give some time for the background task
+    await asyncio.sleep(0.1)
+
+    # Should write fresh anchor ask to G7
+    mock_sheet.write_anchor_ask.assert_called_with(103.0)
 
 @pytest.mark.asyncio
 async def test_no_anchor_write_if_already_working(mock_broker, mock_sheet, config):
@@ -416,8 +365,6 @@ async def test_no_anchor_write_if_already_working(mock_broker, mock_sheet, confi
     mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-1', 'limit_price': 100.0, 'qty': 10, 'action': 'BUY'}]
 
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
     await engine._tick()
 
     # Should NOT write anchor ask to G7
@@ -471,8 +418,6 @@ async def test_engine_tick_unknown_state_returns_early():
 @pytest.mark.asyncio
 async def test_execution_logging_dedupe_and_fallback(mock_broker, mock_sheet, config):
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
 
     # Simulate tracking an order
     engine.order_manager.track(10, OrderResult(order_id="ORD-KNOW", status="submitted"), "BUY")
@@ -532,8 +477,6 @@ async def test_execution_logging_dedupe_and_fallback(mock_broker, mock_sheet, co
 @pytest.mark.asyncio
 async def test_order_status_does_not_double_log_fills(mock_broker, mock_sheet, config):
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
 
     engine.order_manager.track(11, OrderResult(order_id="ORD-FILL", status="submitted"), "BUY")
 
@@ -576,8 +519,6 @@ async def test_protective_reconciliation_skips_buy(mock_broker, mock_sheet, conf
     mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-123', 'limit_price': 100.0, 'qty': 10, 'action': 'BUY'}]
 
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
     engine.order_manager.track(7, OrderResult(order_id="ORD-123", status="submitted"), "BUY")
 
     await engine._tick()
@@ -608,8 +549,6 @@ async def test_full_sell_cycle_halts_trading_evaluation(mock_broker, mock_sheet,
     mock_broker.get_bid_ask.return_value = (99.9, 100.0)
 
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
     # Set previous shares to 10 so it triggers full sell cycle
     engine.last_broker_shares = 10
 
@@ -652,8 +591,6 @@ async def test_full_sell_cycle_same_shares(mock_broker, mock_sheet, config):
     mock_broker.get_bid_ask.return_value = (101.9, 102.0)
 
     engine = GridEngine(mock_broker, mock_sheet, config)
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
     engine.last_broker_shares = 10
 
     # First tick triggers anchor reset
@@ -673,107 +610,5 @@ async def test_full_sell_cycle_same_shares(mock_broker, mock_sheet, config):
 
     # Buy is placed with new price and same shares!
     mock_broker.place_limit_order.assert_called_once_with(
-        ticker="TQQQ", action="BUY", qty=10, limit_price=102.0, on_update=engine._handle_order_update, order_id=mock_broker.get_next_order_id.return_value, order_ref=unittest.mock.ANY
+        ticker="TQQQ", action="BUY", qty=10, limit_price=102.0, on_update=engine._handle_order_update, order_id=mock_broker.get_next_order_id.return_value
     )
-
-@pytest.mark.asyncio
-async def test_order_manager_tombstone_and_delayed_fill(mock_broker, mock_sheet, config):
-    engine = GridEngine(mock_broker, mock_sheet, config)
-    from brokers.base import PositionSnapshot
-    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
-
-    engine.grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-
-
-    # 1. Track BUY row 7 orderId 9
-    from brokers.base import OrderResult
-    engine.order_manager.track(7, OrderResult(order_id='9', status='submitted'), 'BUY', broker=mock_broker, on_update=engine._handle_order_update)
-    assert engine.order_manager.has_open_buy(7)
-
-    # 2. Simulate Cancelled/Error 10052
-    engine._handle_order_update(OrderResult(order_id='9', status='error'))
-    assert not engine.order_manager.has_open_buy(7)
-    assert engine.order_manager.is_tombstoned('9')
-
-    # 3. Simulate PreSubmitted for order 9
-    engine._handle_order_update(OrderResult(order_id='9', status='submitted'))
-
-    # Expected: order 9 is restored as active BUY row 7
-    assert engine.order_manager.has_open_buy(7)
-    assert not engine.order_manager.is_tombstoned('9')
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    mock_sheet.update_row_status.assert_any_call(7, "WORKING_BUY:9")
-
-    # 4. Simulate execution BUY 68 @ 62.54 for order 9
-    mock_sheet.is_exec_id_seen.return_value = False
-    engine._handle_execution({
-        "exec_id": "exec-123",
-        "order_id": "9",
-        "type": "BUY",
-        "filled_qty": 68,
-        "filled_price": 62.54
-    })
-
-    # Allow execution async task to run
-    await asyncio.sleep(0)
-
-    # Expected: Fills row_id is 7, row 7 status becomes OWNED:9
-    mock_sheet.log_fill.assert_called_once()
-    fill_data = mock_sheet.log_fill.call_args[0][0]
-    assert fill_data["row_id"] == "7"
-    mock_sheet.update_row_status.assert_any_call(7, "OWNED:9")
-
-
-@pytest.mark.asyncio
-async def test_reconciliation_exact_match_retracks_order(mock_broker, mock_sheet, config):
-    engine = GridEngine(mock_broker, mock_sheet, config)
-
-    from brokers.base import PositionSnapshot
-    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
-
-    grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-    mock_sheet.fetch_grid.return_value = grid_state
-
-    # Add untracked open order matching row 7 BUY perfectly
-    mock_broker.get_open_orders.return_value = [{
-        'order_id': '99',
-        'ticker': 'TQQQ',
-        'action': 'BUY',
-        'qty': 10,
-        'limit_price': 100.0,
-        'status': 'Submitted',
-        'order_ref': 'TQQQ_V6|r=7|a=B|s=OVT'
-    }]
-
-    await engine._tick()
-
-    assert engine.order_manager.is_tracked('99')
-    assert engine.order_manager.has_open_buy(7)
-    mock_sheet.update_row_status.assert_any_call(7, "WORKING_BUY:99")
-
-@pytest.mark.asyncio
-async def test_reconciliation_cancels_unmatched_order(mock_broker, mock_sheet, config):
-    engine = GridEngine(mock_broker, mock_sheet, config)
-
-    from brokers.base import PositionSnapshot
-    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
-
-    grid_state = GridState(rows={7: GridRow(row_index=7, status="IDLE", has_y=False, sell_price=105.0, buy_price=100.0, shares=10)})
-    mock_sheet.fetch_grid.return_value = grid_state
-
-    # Add untracked open order that matches nothing
-    mock_broker.get_open_orders.return_value = [{
-        'order_id': '99',
-        'ticker': 'TQQQ',
-        'action': 'BUY',
-        'qty': 999,
-        'limit_price': 1.0,
-        'status': 'Submitted',
-        'order_ref': ''
-    }]
-
-    await engine._tick()
-
-    assert not engine.order_manager.is_tracked('99')
-    mock_broker.cancel_order.assert_called_with('99')

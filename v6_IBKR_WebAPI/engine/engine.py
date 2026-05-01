@@ -35,7 +35,6 @@ class GridEngine:
         tz = zoneinfo.ZoneInfo("America/New_York")
         self._last_grid_regeneration = datetime.min.replace(tzinfo=tz)
         self._is_weekend_gap = False
-        self.anchor_refresh_pending = False
 
     async def run(self):
         logger.info("Starting GridEngine run loop")
@@ -184,26 +183,20 @@ class GridEngine:
             except asyncio.TimeoutError:
                 pass
 
-    async def _write_fresh_anchor_ask(self, ask_price: Optional[float] = None) -> bool:
+    async def _write_fresh_anchor_ask(self):
         """
-        Fetches the current ask price (or uses the provided one) and writes it to G7.
+        Fetches the current ask price and writes it to G7.
         Used to reset the anchor and trigger a sheet recalculation.
-        Returns True if successful, False otherwise.
         """
         try:
-            if ask_price is None:
-                bid, ask_price = await self.broker.get_bid_ask(TICKER)
-
-            if ask_price > 0:
-                await self.sheet.write_anchor_ask(ask_price)
-                logger.info(f"Fresh anchor ask {ask_price} written to G7.")
-                return True
+            bid, ask = await self.broker.get_bid_ask(TICKER)
+            if ask > 0:
+                await self.sheet.write_anchor_ask(ask)
+                logger.info(f"Fresh anchor ask {ask} written to G7.")
             else:
                 logger.warning("Could not write fresh anchor ask: ask price is 0.")
-                return False
         except Exception as e:
             logger.error(f"Failed to write fresh anchor ask: {e}")
-            return False
 
     async def _heartbeat_periodic(self):
         while not self._shutdown_event.is_set():
@@ -258,7 +251,7 @@ class GridEngine:
     async def _check_daily_grid_regeneration(self):
         """
         Check if we have crossed 4:00 PM ET or 8:00 PM ET to regenerate the grid.
-        Skip placing new orders between Friday 8:00 PM ET and Sunday 8:00 PM ET.
+        Skip the regeneration between Friday 4:00 PM ET and Sunday 8:00 PM ET.
         """
         tz = zoneinfo.ZoneInfo("America/New_York")
         now_et = datetime.now(tz)
@@ -281,19 +274,19 @@ class GridEngine:
             current_session_start = datetime.combine((now_et - timedelta(days=1)).date(), time(20, 0), tzinfo=tz)
 
         # Weekend Check:
-        # The weekend gap is strictly from Friday 20:00 ET to Sunday 20:00 ET.
-        # If the session start falls in this window, we should skip placing new orders and stay dark.
+        # The weekend gap is strictly from Friday 16:00 ET to Sunday 20:00 ET.
+        # If the session start falls in this window, we should skip regeneration and stay dark.
         weekday = current_session_start.weekday()
 
         is_weekend_gap = False
-        if weekday == 4 and current_session_start.time() == time(20, 0):
+        if weekday == 4 and current_session_start.time() == time(16, 0):
+            is_weekend_gap = True # Friday 16:00 start (skip)
+        elif weekday == 4 and current_session_start.time() == time(20, 0):
             is_weekend_gap = True # Friday 20:00 start (skip)
         elif weekday == 5:
             is_weekend_gap = True # Saturday anytime (skip)
         elif weekday == 6 and current_session_start.time() == time(16, 0):
             is_weekend_gap = True # Sunday 16:00 start (skip)
-
-        logger.info(f"Session state: now_et={now_et}, session_start={current_session_start}, weekend_gap={is_weekend_gap}")
 
         if self._last_grid_regeneration < current_session_start:
             logger.info(f"Boundary threshold crossed (Session start: {current_session_start}). Regenerating grid.")
@@ -302,8 +295,8 @@ class GridEngine:
             # (Especially important for the Gap session's GTC orders so they don't linger)
             await self._cancel_all_orders()
 
-            # Clear internally tracked active orders but preserve tombstones for late fills
-            self.order_manager.tombstone_all_active(reason="session_regeneration")
+            # Clear internally tracked orders.
+            self.order_manager = OrderManager()
 
             self._last_grid_regeneration = now_et
 
@@ -364,15 +357,10 @@ class GridEngine:
         positions = snapshot.positions
         broker_shares = positions.get(TICKER, 0)
 
-        if broker_shares > 0:
-            self.anchor_refresh_pending = False
-
         # Bug 1 Fix: Write G7 only after a full sell cycle complete
         if self.last_broker_shares > 0 and broker_shares == 0:
             logger.info("Full sell cycle detected (shares went to 0). Updating G7 anchor.")
-            success = await self._write_fresh_anchor_ask()
-            if success:
-                self.anchor_refresh_pending = True
+            await self._write_fresh_anchor_ask()
 
             # Immediately update last_broker_shares to prevent triggering again
             self.last_broker_shares = broker_shares
@@ -407,76 +395,6 @@ class GridEngine:
         # 4. Get current open orders for evaluation
         open_orders = await self.broker.get_open_orders()
         broker_order_ids = {o['order_id'] for o in open_orders}
-
-        # 4.5 Robust Reconciliation: Find and handle untracked open orders
-        for order in open_orders:
-            order_id = order['order_id']
-            if not self.order_manager.is_tracked(order_id):
-                order_ref = order.get('order_ref', '')
-                ticker = order.get('ticker')
-
-                # Only reconcile orders for our target ticker
-                if ticker != TICKER:
-                    continue
-
-                matched_row = None
-
-                # 1. Try to match by orderRef (e.g. TQQQ_V6|r=7|a=B|s=OVT)
-                if order_ref and f"{TICKER}_V6" in order_ref:
-                    try:
-                        parts = dict(p.split('=') for p in order_ref.split('|')[1:])
-                        if 'r' in parts:
-                            candidate_row_index = int(parts['r'])
-
-                            # Validate parsed action against actual broker action
-                            parsed_action = 'BUY' if parts.get('a') == 'B' else ('SELL' if parts.get('a') == 'S' else None)
-                            if parsed_action and parsed_action != order['action']:
-                                logger.warning(f"orderRef action {parsed_action} does not match actual broker action {order['action']} for order {order_id}")
-                                continue
-
-                            if candidate_row_index in self.grid_state.rows:
-                                row = self.grid_state.rows[candidate_row_index]
-                                # Validate row state matches action
-                                if order['action'] == 'BUY' and not row.has_y:
-                                    expected_price = row.buy_price
-                                    if row.row_index == 7 and distal_y == 0:
-                                        expected_price += self.config.anchor_buy_offset
-                                    if order['qty'] == row.shares and abs(order['limit_price'] - expected_price) < 0.001:
-                                        matched_row = row.row_index
-                                elif order['action'] == 'SELL' and row.has_y:
-                                    if order['qty'] == row.shares and abs(order['limit_price'] - row.sell_price) < 0.001:
-                                        matched_row = row.row_index
-                    except Exception as e:
-                        logger.warning(f"Failed to parse or validate orderRef {order_ref}: {e}")
-
-                # 2. Try to match by exact price, qty, action against the grid
-                if matched_row is None:
-                    candidates = []
-                    for row in self.grid_state.rows.values():
-                        if order['action'] == 'BUY' and not row.has_y:
-                            expected_price = row.buy_price
-                            if row.row_index == 7 and distal_y == 0:
-                                expected_price += self.config.anchor_buy_offset
-                            if order['qty'] == row.shares and abs(order['limit_price'] - expected_price) < 0.001:
-                                candidates.append(row.row_index)
-                        elif order['action'] == 'SELL' and row.has_y:
-                            if order['qty'] == row.shares and abs(order['limit_price'] - row.sell_price) < 0.001:
-                                candidates.append(row.row_index)
-                    if len(candidates) == 1:
-                        matched_row = candidates[0]
-                    elif len(candidates) > 1:
-                        logger.warning(f"Reconciliation: Ambiguous fallback match for order {order_id} among rows {candidates}. Will not track.")
-
-                if matched_row is not None:
-                    action = order['action']
-                    logger.info(f"Reconciliation: Untracked order {order_id} matched to row {matched_row} as {action}. Re-tracking.")
-                    self.order_manager.track(matched_row, OrderResult(order_id=order_id, status='submitted'), action,
-                                             broker=self.broker, on_update=self._handle_order_update)
-                    new_status = f"WORKING_BUY:{order_id}" if action == 'BUY' else f"WORKING_SELL:{order_id}"
-                    self._update_row_status_in_memory(matched_row, new_status)
-                else:
-                    logger.warning(f"Reconciliation: Found untracked, unmatched {TICKER} order {order_id} (Ref: {order_ref}). Cancelling it.")
-                    await self.broker.cancel_order(order_id)
 
         try:
             # 5. Grid Evaluation
@@ -516,8 +434,6 @@ class GridEngine:
 
                     if in_window:
                         if row.has_y:
-                            if row.row_index == 7:
-                                self.anchor_refresh_pending = False
                             # Expect active SELL order
                             if not self.order_manager.has_open_sell(row.row_index):
                                 if getattr(self, '_is_weekend_gap', False):
@@ -529,16 +445,10 @@ class GridEngine:
                                 self.order_manager.track(row.row_index, OrderResult(order_id=order_id, status='submitted'), 'SELL',
                                                     broker=self.broker, on_update=self._handle_order_update)
 
-                                from brokers.ibkr.order_builder import get_dynamic_exchange, get_dynamic_tif
-                                exchange = get_dynamic_exchange()
-                                tif = get_dynamic_tif(exchange)
-                                order_ref = f"{TICKER}_V6|r={row.row_index}|a=S|s={tif}"
-
                                 result = await self.broker.place_limit_order(
                                     ticker=TICKER, action='SELL', qty=row.shares,
                                     limit_price=row.sell_price, on_update=self._handle_order_update,
-                                    order_id=order_id,
-                                    order_ref=order_ref
+                                    order_id=order_id
                                 )
                                 if result.status == 'filled':
                                     self._update_row_status_in_memory(row.row_index, "IDLE")
@@ -577,36 +487,19 @@ class GridEngine:
                                                 break # Will continue with the outer loop since the outer `if not self.order_manager.has_open_buy` will be false and we do nothing else
 
                             # Expect active BUY order
-                            if self.order_manager.has_open_buy(row.row_index):
-                                if row.row_index == 7:
-                                    self.anchor_refresh_pending = False
-                            else:
+                            if not self.order_manager.has_open_buy(row.row_index):
                                 buy_price = row.buy_price
 
                                 if row.row_index == 7 and distal_y == 0:
                                     # Anchor acquisition!
-
-                                    # ALWAYS validate quote on anchor placement
+                                    buy_price += self.config.anchor_buy_offset
+                                    logger.info("Anchor acquisition condition met for row 7")
+                                    # We check spread using a fresh ask but we DO NOT write it to G7 here.
+                                    # We use the existing buy_price from the sheet (calculated from current G7).
                                     bid, ask = await self.broker.get_bid_ask(TICKER)
-                                    if bid <= 0 or ask <= 0 or self.spread_guard.is_too_wide(bid, ask):
-                                        logger.warning(f"Bad quote (bid={bid}, ask={ask}) or spread too wide. Skipping anchor placement this tick.")
+                                    if self.spread_guard.is_too_wide(bid, ask):
                                         continue
 
-                                    if broker_shares == 0:
-                                        if not self.anchor_refresh_pending:
-                                            logger.info("Anchor acquisition condition met for row 7 (startup/flat refresh)")
-                                            logger.info(f"Writing fresh ask {ask} to G7. Deferring anchor placement to next tick.")
-                                            success = await self._write_fresh_anchor_ask(ask)
-                                            if success:
-                                                self.anchor_refresh_pending = True
-                                            else:
-                                                logger.error("Failed to write fresh anchor ask. Will not proceed with stale anchor BUY.")
-                                            continue
-                                        else:
-                                            logger.info("Anchor refresh already pending and quote is valid, proceeding to place anchor BUY with recalculated sheet values.")
-                                            # We don't write G7 again, we let the order placement proceed
-
-                                    buy_price += self.config.anchor_buy_offset
                                     logger.info(f"Placing anchor BUY for row 7 at {buy_price} (including offset {self.config.anchor_buy_offset})")
                                 else:
                                     logger.info(f"Placing missing BUY for empty row {row.row_index}")
@@ -616,20 +509,11 @@ class GridEngine:
                                 self.order_manager.track(row.row_index, OrderResult(order_id=order_id, status='submitted'), 'BUY',
                                                     broker=self.broker, on_update=self._handle_order_update)
 
-                                from brokers.ibkr.order_builder import get_dynamic_exchange, get_dynamic_tif
-                                exchange = get_dynamic_exchange()
-                                tif = get_dynamic_tif(exchange)
-                                order_ref = f"{TICKER}_V6|r={row.row_index}|a=B|s={tif}"
-
                                 result = await self.broker.place_limit_order(
                                     ticker=TICKER, action='BUY', qty=row.shares,
                                     limit_price=buy_price, on_update=self._handle_order_update,
-                                    order_id=order_id,
-                                    order_ref=order_ref
+                                    order_id=order_id
                                 )
-                                if result.status in ('filled', 'submitted') and row.row_index == 7:
-                                    self.anchor_refresh_pending = False
-
                                 if result.status == 'filled':
                                     self._update_row_status_in_memory(row.row_index, f"OWNED:{result.order_id}")
                                 elif result.status == 'submitted':
@@ -694,41 +578,8 @@ class GridEngine:
         # Queue the fill to be written asynchronously
         asyncio.create_task(self.sheet.log_fill(exec_data))
 
-        # Authoritative state update: even if orderStatus is missed or late, an execution guarantees fill
-        if row_index is not None:
-            self.last_fill_time = datetime.now()
-
-            # Remove from order manager (whether active or tombstoned) as it's now definitively filled
-            self.order_manager.mark_filled(order_id)
-
-            if final_action == 'BUY':
-                new_status = f"OWNED:{order_id}"
-            else: # SELL
-                new_status = "IDLE"
-
-            self._update_row_status_in_memory(row_index, new_status)
-            asyncio.create_task(self._sync_to_sheet())
-            logger.info(f"Execution {exec_id} updated row state for order {order_id} at row {row_index} to {new_status}")
-
     def _handle_order_update(self, result: OrderResult):
         order_id = result.order_id
-
-        # Handle delayed Submitted/PreSubmitted events after Cancelled/Error
-        if result.status == 'submitted' and self.order_manager.is_tombstoned(order_id):
-            row_index, action = self.order_manager.get_row_and_action(order_id)
-            if row_index is not None:
-                logger.info(f"Restoring delayed order {order_id} to active tracking for row {row_index} ({action})")
-                # Remove from tombstones and start tracking actively again
-                if order_id in self.order_manager._tombstones:
-                    del self.order_manager._tombstones[order_id]
-
-                self.order_manager.track(row_index, OrderResult(order_id=order_id, status='submitted'), action,
-                                         broker=self.broker, on_update=self._handle_order_update)
-
-                new_status = f"WORKING_BUY:{order_id}" if action == 'BUY' else f"WORKING_SELL:{order_id}"
-                self._update_row_status_in_memory(row_index, new_status)
-                asyncio.create_task(self._sync_to_sheet())
-
         if result.status == 'filled':
             self.last_fill_time = datetime.now()
             row_index, action = self.order_manager.mark_filled(order_id)
@@ -756,18 +607,8 @@ class GridEngine:
                 if row_index == 7 and action == 'BUY':
                     filled_qty = result.filled_qty if result.filled_qty is not None else 0
                     if filled_qty == 0:
-                        logger.info(f"Anchor BUY {order_id} cancelled/errored with 0 fill. Waiting grace period before writing G7 anchor.")
-
-                        async def _delayed_g7_write():
-                            await asyncio.sleep(5.5) # Wait slightly longer than 5s broker grace period
-                            # Only write if it's still tombstoned (meaning it didn't recover to Submitted/Filled)
-                            if self.order_manager.is_tombstoned(order_id):
-                                logger.info(f"Order {order_id} remains terminal after grace period. Updating G7 anchor.")
-                                await self._write_fresh_anchor_ask()
-                            else:
-                                logger.info(f"Order {order_id} is no longer tombstoned after grace period. Skipping G7 anchor write.")
-
-                        asyncio.create_task(_delayed_g7_write())
+                        logger.info("Anchor BUY cancelled/errored with 0 fill. Updating G7 anchor.")
+                        asyncio.create_task(self._write_fresh_anchor_ask())
 
                 if result.status == 'error':
                     self.row_cooldowns[row_index] = datetime.now() + timedelta(minutes=5)
