@@ -16,7 +16,7 @@ options:
   poll_interval_seconds: 60
   heartbeat_interval_seconds: 60
   health_log_interval_seconds: 300
-  anchor_buy_offset: 0.0
+  anchor_buy_offset: 1.5
   share_mismatch_mode: "halt"
   max_spread_pct: 0.5
   google_sheet_id: ""
