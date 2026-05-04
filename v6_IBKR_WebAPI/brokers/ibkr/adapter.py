@@ -34,8 +34,12 @@ class IBKRAdapter(BrokerBase):
         self.ib.errorEvent += self._on_error
 
     def _on_error(self, reqId, errorCode, errorString, contract):
-        logger.error(f"IBKR Error {errorCode}: {errorString}")
-        self._last_error[reqId] = (errorCode, errorString)
+        NONFATAL_WARNING_CODES = {2107, 2109, 10349}
+        if errorCode in NONFATAL_WARNING_CODES:
+            logger.warning(f"IBKR Warning {errorCode} (ignored): {errorString}")
+        else:
+            logger.error(f"IBKR Error {errorCode}: {errorString}")
+            self._last_error[reqId] = (errorCode, errorString)
 
     async def connect(self) -> bool:
         self._broker_state_ready = False
@@ -364,7 +368,7 @@ class IBKRAdapter(BrokerBase):
 
         order = LimitOrder(action, qty, limit_price)
         order.tif = tif
-        order.outsideRth = True
+        order.outsideRth = False if exchange == 'OVERNIGHT' else True
         order.overridePercentageConstraints = True
 
         if order_id:

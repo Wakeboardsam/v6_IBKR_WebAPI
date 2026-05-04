@@ -54,13 +54,13 @@ async def test_place_bracket_order_rth_gtc(mock_ib):
         from brokers.ibkr.order_builder import build_bracket_order
         # Mock the dynamic exchange and TIF so we know what they evaluate to
         with patch('brokers.ibkr.order_builder.get_dynamic_exchange', return_value='OVERNIGHT'):
-            with patch('brokers.ibkr.order_builder.get_dynamic_tif', return_value='OND'):
+            with patch('brokers.ibkr.order_builder.get_dynamic_tif', return_value='DAY'):
                 c, p, t = build_bracket_order(mock_ib, 'TQQQ', 'BUY', 10, 50.0, 55.0)
 
-        assert p.outsideRth is True
-        assert p.tif == 'OND'
-        assert t.outsideRth is True
-        assert t.tif == 'OND'
+        assert p.outsideRth is False
+        assert p.tif == 'DAY'
+        assert t.outsideRth is False
+        assert t.tif == 'DAY'
 
 @pytest.mark.parametrize("weekday,current_time,expected_exchange", [
     (0, datetime.time(10, 0), "SMART"),      # Mon 10 AM ET -> SMART
@@ -332,7 +332,7 @@ async def test_place_limit_order_contract_routing(mock_ib):
     adapter.ib = mock_ib
 
     with patch('brokers.ibkr.order_builder.get_dynamic_exchange', return_value='OVERNIGHT'):
-        with patch('brokers.ibkr.order_builder.get_dynamic_tif', return_value='OND'):
+        with patch('brokers.ibkr.order_builder.get_dynamic_tif', return_value='DAY'):
             await adapter.place_limit_order('TQQQ', 'BUY', 10, 50.0, order_id="123")
 
             # Check the contract passed to placeOrder
@@ -346,7 +346,7 @@ def test_build_bracket_order_contract_routing(mock_ib):
     from brokers.ibkr.order_builder import build_bracket_order
 
     with patch('brokers.ibkr.order_builder.get_dynamic_exchange', return_value='OVERNIGHT'):
-        with patch('brokers.ibkr.order_builder.get_dynamic_tif', return_value='OND'):
+        with patch('brokers.ibkr.order_builder.get_dynamic_tif', return_value='DAY'):
             c, p, t = build_bracket_order(mock_ib, 'TQQQ', 'BUY', 10, 50.0, 55.0)
             assert c.symbol == 'TQQQ'
             assert c.exchange == 'OVERNIGHT'
@@ -511,3 +511,23 @@ async def test_positions_timeout_keeps_state_not_ready(mock_ib):
 
     assert adapter._broker_state_ready is False
     assert adapter._connected_not_ready_since is not None
+
+def test_on_error_ignores_nonfatal():
+    adapter = IBKRAdapter("127.0.0.1", 7497, 1, False)
+    adapter._on_error(reqId=123, errorCode=2107, errorString="HMDS", contract=None)
+    adapter._on_error(reqId=123, errorCode=2109, errorString="outsideRth ignored", contract=None)
+    adapter._on_error(reqId=123, errorCode=10349, errorString="TIF adjusted to DAY", contract=None)
+
+    assert len(adapter._last_error) == 0
+
+def test_on_error_records_fatal():
+    adapter = IBKRAdapter("127.0.0.1", 7497, 1, False)
+    adapter._on_error(reqId=123, errorCode=10052, errorString="Invalid TIF", contract=None)
+    assert 123 in adapter._last_error
+    assert adapter._last_error[123] == (10052, "Invalid TIF")
+
+    adapter._on_error(reqId=124, errorCode=10329, errorString="Precautionary", contract=None)
+    assert 124 in adapter._last_error
+
+    adapter._on_error(reqId=125, errorCode=201, errorString="Rejected", contract=None)
+    assert 125 in adapter._last_error
