@@ -251,7 +251,7 @@ class GridEngine:
     async def _check_daily_grid_regeneration(self):
         """
         Check if we have crossed 4:00 PM ET or 8:00 PM ET to regenerate the grid.
-        Skip the regeneration between Friday 4:00 PM ET and Sunday 8:00 PM ET.
+        Skip the regeneration between Friday 8:00 PM ET and Sunday 8:00 PM ET.
         """
         tz = zoneinfo.ZoneInfo("America/New_York")
         now_et = datetime.now(tz)
@@ -274,14 +274,12 @@ class GridEngine:
             current_session_start = datetime.combine((now_et - timedelta(days=1)).date(), time(20, 0), tzinfo=tz)
 
         # Weekend Check:
-        # The weekend gap is strictly from Friday 16:00 ET to Sunday 20:00 ET.
+        # The weekend gap is strictly from Friday 20:00 ET to Sunday 20:00 ET.
         # If the session start falls in this window, we should skip regeneration and stay dark.
         weekday = current_session_start.weekday()
 
         is_weekend_gap = False
-        if weekday == 4 and current_session_start.time() == time(16, 0):
-            is_weekend_gap = True # Friday 16:00 start (skip)
-        elif weekday == 4 and current_session_start.time() == time(20, 0):
+        if weekday == 4 and current_session_start.time() == time(20, 0):
             is_weekend_gap = True # Friday 20:00 start (skip)
         elif weekday == 5:
             is_weekend_gap = True # Saturday anytime (skip)
