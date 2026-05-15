@@ -14,5 +14,9 @@
   "max_spread_pct": "float",
   "google_sheet_id": "str",
   "google_credentials_json": "str",
-  "enable_vnc": "bool"
+  "enable_vnc": "bool",
+  "maintenance_enabled": "bool",
+  "maintenance_start_local": "str",
+  "maintenance_end_local": "str",
+  "maintenance_cancel_open_orders": "bool"
 }
