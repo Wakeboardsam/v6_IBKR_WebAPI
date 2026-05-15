@@ -35,6 +35,33 @@ class GridEngine:
         tz = zoneinfo.ZoneInfo("America/New_York")
         self._last_grid_regeneration = datetime.min.replace(tzinfo=tz)
         self._is_weekend_gap = False
+        self._maintenance_cancel_done = False
+
+    def _parse_hhmm(self, value: str) -> time:
+        try:
+            h, m = map(int, value.split(":"))
+            return time(hour=h, minute=m)
+        except Exception as e:
+            logger.error(f"Failed to parse time '{value}': {e}")
+            return time(0, 0)
+
+    def _is_in_maintenance_window(self) -> bool:
+        if not self.config.maintenance_enabled:
+            return False
+
+        try:
+            now = datetime.now().time()
+            start = self._parse_hhmm(self.config.maintenance_start_local)
+            end = self._parse_hhmm(self.config.maintenance_end_local)
+
+            if start <= end:
+                return start <= now < end
+            else:
+                # Window crosses midnight
+                return now >= start or now < end
+        except Exception as e:
+            logger.error(f"Error checking maintenance window: {e}")
+            return False
 
     async def run(self):
         logger.info("Starting GridEngine run loop")
@@ -305,6 +332,21 @@ class GridEngine:
     async def _tick(self):
         # 0. Watchdog: ensure connection
         await self.broker.ensure_connected()
+
+        if self._is_in_maintenance_window():
+            if not self._maintenance_cancel_done:
+                logger.warning("Entering maintenance window; cancelling open orders and freezing trading")
+                if self.config.maintenance_cancel_open_orders:
+                    await self._cancel_all_orders()
+                    self.order_manager = OrderManager()
+                self._maintenance_cancel_done = True
+            else:
+                logger.debug("Maintenance window active; trading halted")
+            return
+        else:
+            if self._maintenance_cancel_done:
+                logger.info("Maintenance window ended; resuming normal trading checks")
+            self._maintenance_cancel_done = False
 
         # 0.0 Daily Grid Regeneration Check
         # We wrap this in a try-except to prevent tests from sporadically failing if mocked time is unexpected

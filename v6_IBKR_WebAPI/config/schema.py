@@ -19,3 +19,7 @@ class AppConfig(BaseModel):
     google_sheet_id: str
     google_credentials_json: str
     enable_vnc: bool = Field(default=False)
+    maintenance_enabled: bool = Field(default=True)
+    maintenance_start_local: str = Field(default="23:44")
+    maintenance_end_local: str = Field(default="00:00")
+    maintenance_cancel_open_orders: bool = Field(default=True)
