@@ -3,7 +3,7 @@ import logging
 import signal
 from datetime import datetime, time, timedelta
 import zoneinfo
-from typing import Optional
+from typing import Optional, List
 
 from brokers.base import BrokerBase, OrderResult
 from config.schema import AppConfig
@@ -15,8 +15,6 @@ from sheets.interface import SheetInterface
 logger = logging.getLogger(__name__)
 
 TICKER = "TQQQ"
-
-from typing import List
 
 def _extract_order_id_from_status(status: str, prefix: str) -> Optional[str]:
     """
@@ -431,9 +429,10 @@ class GridEngine:
             if matched_combination:
                 # Verify that NONE of the matched candidates' order IDs are currently active at the broker
                 unsafe = False
+                prefix_to_check = "WORKING_BUY:" if delta > 0 else "WORKING_SELL:"
                 for r in matched_combination:
                     # Extract active order ID
-                    active_order_id = _extract_order_id_from_status(r.status, "WORKING_BUY:") or _extract_order_id_from_status(r.status, "WORKING_SELL:")
+                    active_order_id = _extract_order_id_from_status(r.status, prefix_to_check)
 
                     if active_order_id and active_order_id in broker_order_ids:
                         unsafe = True
