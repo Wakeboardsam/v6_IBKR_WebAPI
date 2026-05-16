@@ -16,7 +16,17 @@ logger = logging.getLogger(__name__)
 
 TICKER = "TQQQ"
 
-from typing import List, Optional, Tuple
+from typing import List
+
+def _extract_order_id_from_status(status: str, prefix: str) -> Optional[str]:
+    """
+    Parses a pipe-delimited status string to find a specific prefix (e.g., 'WORKING_BUY:')
+    and returns the associated order ID.
+    """
+    for part in status.split('|'):
+        if part.startswith(prefix):
+            return part[len(prefix):]
+    return None
 
 def _find_unique_combination(target_sum: int, candidates: List[GridRow]) -> Optional[List[GridRow]]:
     """
@@ -410,10 +420,10 @@ class GridEngine:
             # Identify candidate rows based on delta direction
             if delta > 0:
                 # Broker has more shares -> possibly missed BUY fill(s)
-                candidates = [r for r in self.grid_state.rows.values() if r.status.startswith("WORKING_BUY:")]
+                candidates = [r for r in self.grid_state.rows.values() if _extract_order_id_from_status(r.status, "WORKING_BUY:") is not None]
             elif delta < 0:
                 # Broker has fewer shares -> possibly missed SELL fill(s)
-                candidates = [r for r in self.grid_state.rows.values() if r.status.startswith("WORKING_SELL:")]
+                candidates = [r for r in self.grid_state.rows.values() if _extract_order_id_from_status(r.status, "WORKING_SELL:") is not None]
 
             # Attempt subset matching
             matched_combination = _find_unique_combination(abs(delta), candidates)
@@ -423,12 +433,8 @@ class GridEngine:
                 unsafe = False
                 for r in matched_combination:
                     # Extract active order ID
-                    active_order_id = None
-                    parts = r.status.split('|')
-                    for part in parts:
-                        if part.startswith("WORKING_BUY:") or part.startswith("WORKING_SELL:"):
-                            active_order_id = part.split(":")[1]
-                            break
+                    active_order_id = _extract_order_id_from_status(r.status, "WORKING_BUY:") or _extract_order_id_from_status(r.status, "WORKING_SELL:")
+
                     if active_order_id and active_order_id in broker_order_ids:
                         unsafe = True
                         break
@@ -439,12 +445,7 @@ class GridEngine:
                     for r in matched_combination:
                         if delta > 0:
                             # Parse out existing order ID to preserve it
-                            existing_id = "0"
-                            parts = r.status.split('|')
-                            for part in parts:
-                                if part.startswith("WORKING_BUY:"):
-                                    existing_id = part.split(":")[1]
-                                    break
+                            existing_id = _extract_order_id_from_status(r.status, "WORKING_BUY:") or "0"
                             new_status = f"OWNED:{existing_id}"
                             self._update_row_status_in_memory(r.row_index, new_status)
                         else:
