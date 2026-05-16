@@ -3,7 +3,7 @@ import logging
 import signal
 from datetime import datetime, time, timedelta
 import zoneinfo
-from typing import Optional
+from typing import Optional, List
 
 from brokers.base import BrokerBase, OrderResult
 from config.schema import AppConfig
@@ -15,6 +15,43 @@ from sheets.interface import SheetInterface
 logger = logging.getLogger(__name__)
 
 TICKER = "TQQQ"
+
+def _extract_order_id_from_status(status: str, prefix: str) -> Optional[str]:
+    """
+    Parses a pipe-delimited status string to find a specific prefix (e.g., 'WORKING_BUY:')
+    and returns the associated order ID.
+    """
+    for part in status.split('|'):
+        if part.startswith(prefix):
+            return part[len(prefix):]
+    return None
+
+def _find_unique_combination(target_sum: int, candidates: List[GridRow]) -> Optional[List[GridRow]]:
+    """
+    Finds a unique combination of candidate rows whose shares sum exactly to target_sum.
+    Returns the list of matching rows if exactly one combination is found, else None.
+    """
+    valid_combinations = []
+
+    def backtrack(start_index: int, current_sum: int, current_combo: List[GridRow]):
+        # We want exactly target_sum
+        if current_sum == target_sum:
+            valid_combinations.append(list(current_combo))
+            return
+        if current_sum > target_sum:
+            return
+
+        for i in range(start_index, len(candidates)):
+            cand = candidates[i]
+            current_combo.append(cand)
+            backtrack(i + 1, current_sum + cand.shares, current_combo)
+            current_combo.pop()
+
+    backtrack(0, 0, [])
+
+    if len(valid_combinations) == 1:
+        return valid_combinations[0]
+    return None
 
 class GridEngine:
     def __init__(self, broker: BrokerBase, sheet: SheetInterface, config: AppConfig):
@@ -412,7 +449,58 @@ class GridEngine:
         sheet_shares = sum(row.shares for row in self.grid_state.rows.values() if row.has_y)
         mismatch_active = False
 
+        # 4. Get current open orders for evaluation (needed for both reconciliation and grid eval)
+        open_orders = await self.broker.get_open_orders()
+        broker_order_ids = {str(o['order_id']) for o in open_orders}
+
         if broker_shares != sheet_shares:
+            delta = broker_shares - sheet_shares
+            candidates = []
+
+            # Identify candidate rows based on delta direction
+            if delta > 0:
+                # Broker has more shares -> possibly missed BUY fill(s)
+                candidates = [r for r in self.grid_state.rows.values() if _extract_order_id_from_status(r.status, "WORKING_BUY:") is not None]
+            elif delta < 0:
+                # Broker has fewer shares -> possibly missed SELL fill(s)
+                candidates = [r for r in self.grid_state.rows.values() if _extract_order_id_from_status(r.status, "WORKING_SELL:") is not None]
+
+            # Attempt subset matching
+            matched_combination = _find_unique_combination(abs(delta), candidates)
+
+            if matched_combination:
+                # Verify that NONE of the matched candidates' order IDs are currently active at the broker
+                unsafe = False
+                prefix_to_check = "WORKING_BUY:" if delta > 0 else "WORKING_SELL:"
+                for r in matched_combination:
+                    # Extract active order ID
+                    active_order_id = _extract_order_id_from_status(r.status, prefix_to_check)
+
+                    if active_order_id and active_order_id in broker_order_ids:
+                        unsafe = True
+                        break
+
+                if not unsafe:
+                    # Reconciliation is safe to proceed
+                    logger.info(f"Reconciling missed fills for {len(matched_combination)} rows (delta={delta})")
+                    for r in matched_combination:
+                        if delta > 0:
+                            # Parse out existing order ID to preserve it
+                            existing_id = _extract_order_id_from_status(r.status, "WORKING_BUY:") or "0"
+                            new_status = f"OWNED:{existing_id}"
+                            self._update_row_status_in_memory(r.row_index, new_status)
+                        else:
+                            self._update_row_status_in_memory(r.row_index, "IDLE")
+
+                    await self._sync_to_sheet()
+                    msg = f"RECONCILIATION SUCCESSFUL: Reconciled {abs(delta)} shares across {len(matched_combination)} rows. Halting tick to let state stabilize."
+                    logger.info(msg)
+                    try:
+                        await self.sheet.log_error(msg)
+                    except Exception as e:
+                        pass
+                    return
+
             msg = f"CIRCUIT BREAKER: Share discrepancy. Broker: {broker_shares}, Sheet: {sheet_shares}. Mode: {self.config.share_mismatch_mode}"
             try:
                 await self.sheet.log_error(msg)
@@ -431,10 +519,6 @@ class GridEngine:
         window_start = max(7, distal_y - 3)
         window_end = max(7, distal_y + 3)
         window_range = range(window_start, window_end + 1)
-
-        # 4. Get current open orders for evaluation
-        open_orders = await self.broker.get_open_orders()
-        broker_order_ids = {o['order_id'] for o in open_orders}
 
         try:
             # 5. Grid Evaluation

@@ -63,8 +63,6 @@ async def test_share_mismatch_halt(mock_broker, mock_sheet, config):
     # Should log error and return early
     mock_sheet.log_error.assert_called()
     assert mock_broker.place_limit_order.call_count == 0
-    # Should not even reach grid evaluation (re-tracking check)
-    mock_broker.get_open_orders.assert_not_called()
 
 @pytest.mark.asyncio
 async def test_share_mismatch_warn(mock_broker, mock_sheet, config):
