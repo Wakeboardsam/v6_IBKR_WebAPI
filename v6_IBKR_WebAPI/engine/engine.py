@@ -75,7 +75,8 @@ class GridEngine:
         self._maintenance_cancel_done = False
 
         # Bridge Anchor states
-        self._bridge_state: Optional[str] = None # None | 'ANCHOR_RECALC_PENDING' | 'TRIM_PENDING'
+        self._bridge_state: str = 'IDLE' # Can be 'IDLE', 'ARMED', 'ANCHOR_RECALC_PENDING', 'TRIM_PENDING', 'BRIDGE_HALTED'
+        self._pending_trim_qty = 0
         self._bridge_shares_acquired: int = 0
 
     def _parse_hhmm(self, value: str) -> time:
