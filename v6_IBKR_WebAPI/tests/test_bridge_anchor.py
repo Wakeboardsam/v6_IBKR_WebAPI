@@ -67,6 +67,8 @@ async def test_bridge_anchor_arms_correctly(mock_broker, mock_sheet, config):
     # We must explicitly track the SELL order to satisfy condition 4
     engine.order_manager.track(7, OrderResult(order_id="ORD-SELL-7", status="submitted"), 'SELL')
 
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 50})
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-SELL-7'}]
     await engine._tick()
 
     # Check stop limit order was placed
@@ -343,3 +345,31 @@ async def test_bridge_anchor_retrack_trim_pending_no_qty_in_order(mock_broker, m
     assert engine.order_manager.has_open_action(7, 'TRIM_SELL')
     assert engine._bridge_state == 'TRIM_PENDING'
     assert engine._pending_trim_qty == 4
+
+@pytest.mark.asyncio
+async def test_bridge_anchor_delayed_sell_fill_ignored(mock_broker, mock_sheet, config):
+    engine = GridEngine(mock_broker, mock_sheet, config)
+
+    mock_sheet.fetch_grid.return_value = setup_grid_state([
+        {'row_index': 7, 'status': 'WORKING_SELL:ORD-SELL-7|BRIDGE_BUY:ORD-BRIDGE'}
+    ])
+    engine.order_manager.track(7, OrderResult(order_id="ORD-SELL-7", status="submitted"), 'SELL')
+    engine.order_manager.track(7, OrderResult(order_id="ORD-BRIDGE", status="submitted"), 'BRIDGE_BUY')
+
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 0})
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-BRIDGE'}, {'order_id': 'ORD-SELL-7'}]
+
+    await engine._tick()
+
+    # 2. BRIDGE_BUY fill arrives FIRST
+    engine._handle_order_update(OrderResult(order_id="ORD-BRIDGE", status="filled", filled_price=105.0, filled_qty=10))
+
+    assert engine._bridge_state == 'ANCHOR_RECALC_PENDING'
+    assert engine.grid_state.rows[7].status == 'OWNED:ORD-BRIDGE'
+
+    # 4. Delayed SELL fill arrives SECOND
+    engine._handle_order_update(OrderResult(order_id="ORD-SELL-7", status="filled"))
+
+    # 5. Row 7 must remain OWNED:<bridge_id>, not IDLE
+    assert engine.grid_state.rows[7].status == 'OWNED:ORD-BRIDGE'
+    assert engine._bridge_state == 'ANCHOR_RECALC_PENDING'

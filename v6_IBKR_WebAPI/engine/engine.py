@@ -1042,7 +1042,17 @@ class GridEngine:
                         self._bridge_state = None
                         self._pending_trim_qty = 0
                     else: # SELL
-                        new_status = "IDLE"
+                        # Check if this is a delayed row-7 SELL fill arriving AFTER the bridge anchor already bought
+                        if row_index == 7 and self._bridge_state in ['ANCHOR_RECALC_PENDING', 'TRIM_PENDING']:
+                            # Preserve the current status (which is OWNED:bridge_id)
+                            logger.info(f"Delayed row 7 SELL fill observed for order {order_id}. Intentionally ignoring IDLE overwrite due to active bridge state ({self._bridge_state}).")
+                            if self.grid_state and 7 in self.grid_state.rows:
+                                new_status = self.grid_state.rows[7].status
+                                # Remove WORKING_SELL part if present, but keep OWNED and others
+                                parts = new_status.split('|')
+                                new_status = '|'.join([p for p in parts if not p.startswith('WORKING_SELL:')])
+                        else:
+                            new_status = "IDLE"
 
                     self._update_row_status_in_memory(row_index, new_status)
 
@@ -1084,6 +1094,15 @@ class GridEngine:
                             if "OWNED:" in status:
                                 owned_id = status.split("OWNED:")[1].split("|")[0]
                         new_status = f"OWNED:{owned_id}"
+                    elif action == 'BRIDGE_BUY':
+                        logger.error(f"BRIDGE_BUY order {order_id} errored. Returning row 7 to WORKING_SELL and reverting bridge state.")
+                        self._bridge_state = 'IDLE'
+                        if self.grid_state and row_index in self.grid_state.rows:
+                            status = self.grid_state.rows[row_index].status
+                            parts = status.split('|')
+                            new_status = '|'.join([p for p in parts if not p.startswith('BRIDGE_BUY:')])
+                        else:
+                            new_status = "IDLE"
                     else:
                         new_status = "IDLE"
 
@@ -1109,6 +1128,15 @@ class GridEngine:
                             if "OWNED:" in status:
                                 owned_id = status.split("OWNED:")[1].split("|")[0]
                         new_status = f"OWNED:{owned_id}"
+                    elif action == 'BRIDGE_BUY':
+                        logger.info(f"BRIDGE_BUY order {order_id} cancelled explicitly. Reverting row 7 status.")
+                        self._bridge_state = 'IDLE'
+                        if self.grid_state and row_index in self.grid_state.rows:
+                            status = self.grid_state.rows[row_index].status
+                            parts = status.split('|')
+                            new_status = '|'.join([p for p in parts if not p.startswith('BRIDGE_BUY:')])
+                        else:
+                            new_status = "IDLE"
                     else:
                         new_status = "IDLE"
 
