@@ -216,3 +216,76 @@ async def test_bridge_retrack_orders(mock_broker, mock_sheet, config):
     # Verify both got re-tracked
     assert engine.order_manager.has_open_sell(7)
     assert engine.order_manager.has_open_action(7, 'BRIDGE_BUY')
+
+
+@pytest.mark.asyncio
+async def test_bridge_trim_invalid_bid_halts(mock_broker, mock_sheet, config):
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    engine._bridge_state = 'ANCHOR_RECALC_PENDING'
+    mock_sheet.fetch_grid.return_value = setup_grid_state([
+        {'row_index': 7, 'status': 'OWNED:ORD-BRIDGE', 'shares': 52}
+    ])
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 54})
+    mock_broker.get_bid_ask.return_value = (0.0, 100.1) # Invalid bid
+    mock_broker.get_open_orders.return_value = []
+
+    await engine._tick()
+
+    assert engine._bridge_state == 'BRIDGE_HALTED'
+    mock_sheet.log_error.assert_called()
+    mock_broker.place_limit_order.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_bridge_trim_invalid_limit_halts(mock_broker, mock_sheet, config):
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    engine._bridge_state = 'ANCHOR_RECALC_PENDING'
+    engine.config.anchor_buy_offset = 1.5
+    mock_sheet.fetch_grid.return_value = setup_grid_state([
+        {'row_index': 7, 'status': 'OWNED:ORD-BRIDGE', 'shares': 52}
+    ])
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 54})
+    mock_broker.get_bid_ask.return_value = (1.0, 2.1) # current bid - offset <= 0
+    mock_broker.get_open_orders.return_value = []
+
+    await engine._tick()
+
+    assert engine._bridge_state == 'BRIDGE_HALTED'
+    mock_sheet.log_error.assert_called()
+    mock_broker.place_limit_order.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_bridge_trim_placement_error_halts(mock_broker, mock_sheet, config):
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    engine._bridge_state = 'ANCHOR_RECALC_PENDING'
+    engine.config.anchor_buy_offset = 1.5
+    mock_sheet.fetch_grid.return_value = setup_grid_state([
+        {'row_index': 7, 'status': 'OWNED:ORD-BRIDGE', 'shares': 52}
+    ])
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 54})
+    mock_broker.get_bid_ask.return_value = (100.0, 100.1)
+    mock_broker.get_open_orders.return_value = []
+    mock_broker.place_limit_order.return_value = OrderResult(order_id="ORD-TRIM", status="error", error_msg="Mock error")
+
+    await engine._tick()
+
+    assert engine._bridge_state == 'BRIDGE_HALTED'
+    assert not engine.order_manager.has_open_action(7, 'TRIM_SELL')
+
+@pytest.mark.asyncio
+async def test_bridge_trim_status_written(mock_broker, mock_sheet, config):
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    engine._bridge_state = 'ANCHOR_RECALC_PENDING'
+    engine.config.anchor_buy_offset = 1.5
+    mock_sheet.fetch_grid.return_value = setup_grid_state([
+        {'row_index': 7, 'status': 'OWNED:ORD-BRIDGE', 'shares': 52}
+    ])
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 54})
+    mock_broker.get_bid_ask.return_value = (100.0, 100.1)
+    mock_broker.get_open_orders.return_value = []
+    mock_broker.place_limit_order.return_value = OrderResult(order_id="ORD-TRIM", status="submitted")
+    mock_broker.get_next_order_id.return_value = "ORD-TRIM"
+
+    await engine._tick()
+
+    assert engine._bridge_state == 'TRIM_PENDING'
+    assert engine.grid_state.rows[7].status == "OWNED:ORD-BRIDGE|TRIM_SELL:ORD-TRIM"

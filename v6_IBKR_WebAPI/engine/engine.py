@@ -370,6 +370,26 @@ class GridEngine:
         # We only set this to true if the gap is active. This avoids breaking tests that mock time improperly.
         self._is_weekend_gap = is_weekend_gap
 
+    async def _cancel_bridge_anchor(self, reason: str):
+        """Helper to immediately cancel the Bridge Anchor order and clear tracking."""
+        logger.info(f"{reason} Cancelling Bridge Anchor.")
+        bridge_oids = self.order_manager.get_order_ids_for_action(7, 'BRIDGE_BUY')
+        for oid in bridge_oids:
+            await self.broker.cancel_order(oid)
+
+        self.order_manager.clear_action_for_row(7, 'BRIDGE_BUY')
+
+        # Remove BRIDGE_BUY from row 7 status if it's there
+        if self.grid_state and 7 in self.grid_state.rows:
+            row7 = self.grid_state.rows[7]
+            status_parts = row7.status.split('|')
+            new_parts = [p for p in status_parts if not p.startswith("BRIDGE_BUY:")]
+            new_status = "|".join(new_parts) if new_parts else "IDLE"
+            if row7.status != new_status:
+                self._update_row_status_in_memory(7, new_status)
+                import asyncio
+                asyncio.create_task(self._sync_to_sheet())
+
     async def _evaluate_bridge_anchor(self):
         """
         Evaluates conditions for the Bridge Anchor feature.
@@ -391,10 +411,7 @@ class GridEngine:
         if not (len(owned_rows) == 1 and owned_rows[0].row_index == 7):
             # Cleanup if conditions not met but order exists
             if self.order_manager.has_open_action(7, 'BRIDGE_BUY'):
-                logger.info("Bridge Anchor active but Row 7 is no longer the ONLY owned row. Cancelling Bridge Anchor.")
-                bridge_oids = self.order_manager.get_order_ids_for_action(7, 'BRIDGE_BUY')
-                for oid in bridge_oids:
-                    await self.broker.cancel_order(oid)
+                await self._cancel_bridge_anchor("Bridge Anchor active but Row 7 is no longer the ONLY owned row.")
             return
 
         row7 = self.grid_state.rows[7]
@@ -402,10 +419,7 @@ class GridEngine:
         # Condition 4: Row 7 has a working sell order
         if not self.order_manager.has_open_sell(7):
             if self.order_manager.has_open_action(7, 'BRIDGE_BUY'):
-                logger.info("Row 7 SELL order missing/cancelled. Cancelling Bridge Anchor.")
-                bridge_oids = self.order_manager.get_order_ids_for_action(7, 'BRIDGE_BUY')
-                for oid in bridge_oids:
-                    await self.broker.cancel_order(oid)
+                await self._cancel_bridge_anchor("Row 7 SELL order missing/cancelled.")
             return
 
         # Condition 3: Broker shares match row 7 shares
@@ -415,10 +429,7 @@ class GridEngine:
         broker_shares = snapshot.positions.get(TICKER, 0)
         if broker_shares != row7.shares:
             if self.order_manager.has_open_action(7, 'BRIDGE_BUY'):
-                logger.info("Broker shares do not match Row 7 shares. Cancelling Bridge Anchor.")
-                bridge_oids = self.order_manager.get_order_ids_for_action(7, 'BRIDGE_BUY')
-                for oid in bridge_oids:
-                    await self.broker.cancel_order(oid)
+                await self._cancel_bridge_anchor("Broker shares do not match Row 7 shares.")
             return
 
         # Condition 5: There is not already a Bridge Anchor order active for row 7
@@ -552,10 +563,8 @@ class GridEngine:
             if self._bridge_state == 'ANCHOR_RECALC_PENDING' and delta >= 0:
                 # Still recalculating, allow broker to have equal or more shares (since we just bought)
                 bridge_mismatch_allowed = True
-            elif self._bridge_state == 'TRIM_PENDING' and delta > 0:
-                # Allow excess mismatch exactly equal to our pending trim amount?
-                # Actually, the excess can be anything as long as we're trimming. But let's be strict:
-                # If we're trimming, broker_shares > sheet_shares.
+            elif self._bridge_state == 'TRIM_PENDING' and delta == self._pending_trim_qty:
+                # Allow excess mismatch exactly equal to our pending trim amount
                 bridge_mismatch_allowed = True
 
             if bridge_mismatch_allowed:
@@ -676,10 +685,18 @@ class GridEngine:
                                 if result.status == 'error':
                                     logger.error(f"Failed to place trim SELL order: {result.error_msg}")
                                     self._bridge_state = 'BRIDGE_HALTED'
+                                    self.order_manager.clear_action_for_row(7, 'TRIM_SELL')
                                     return
                                 else:
                                     logger.info(f"Trim SELL placed. Limit: {trim_limit_price}")
                                     self._bridge_state = 'TRIM_PENDING'
+                                    self._pending_trim_qty = excess
+                                    # Append TRIM_SELL to row 7 status to persist
+                                    current_status = row7.status
+                                    if "TRIM_SELL" not in current_status:
+                                        new_status = f"{current_status}|TRIM_SELL:{trim_order_id}"
+                                        self._update_row_status_in_memory(7, new_status)
+                                        asyncio.create_task(self._sync_to_sheet())
                     else:
                         msg = f"Bridge flow halted: Excess shares ({excess}) exceed bridge_max_auto_trim_shares ({self.config.bridge_max_auto_trim_shares})."
                         logger.error(msg)
@@ -952,6 +969,8 @@ class GridEngine:
                             if "OWNED:" in status_str:
                                 owned_id = _extract_order_id_from_status(status_str, "OWNED:") or "0"
                         new_status = f"OWNED:{owned_id}"
+                        self._bridge_state = None
+                        self._pending_trim_qty = 0
                     else: # SELL
                         new_status = "IDLE"
 
@@ -999,5 +1018,30 @@ class GridEngine:
                         new_status = "IDLE"
 
                     logger.info(f"Setting {new_status} and cooldown for row {row_index} due to async order error.")
+                    self._update_row_status_in_memory(row_index, new_status)
+                    asyncio.create_task(self._sync_to_sheet())
+                else:
+                    # Cancelled explicitly
+                    if action == 'SELL':
+                        owned_id = "0"
+                        if self.grid_state and row_index in self.grid_state.rows:
+                            status = self.grid_state.rows[row_index].status
+                            if "OWNED:" in status:
+                                owned_id = status.split("OWNED:")[1].split("|")[0]
+                        new_status = f"OWNED:{owned_id}"
+                    elif action == 'TRIM_SELL':
+                        # Trim cancelled, halt flow
+                        self._bridge_state = 'BRIDGE_HALTED'
+                        logger.error(f"TRIM_SELL order {order_id} cancelled explicitly. Halting bridge flow.")
+                        owned_id = "0"
+                        if self.grid_state and row_index in self.grid_state.rows:
+                            status = self.grid_state.rows[row_index].status
+                            if "OWNED:" in status:
+                                owned_id = status.split("OWNED:")[1].split("|")[0]
+                        new_status = f"OWNED:{owned_id}"
+                    else:
+                        new_status = "IDLE"
+
+                    logger.info(f"Setting {new_status} for row {row_index} due to async order cancellation.")
                     self._update_row_status_in_memory(row_index, new_status)
                     asyncio.create_task(self._sync_to_sheet())
