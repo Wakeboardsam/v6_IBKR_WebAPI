@@ -289,3 +289,57 @@ async def test_bridge_trim_status_written(mock_broker, mock_sheet, config):
 
     assert engine._bridge_state == 'TRIM_PENDING'
     assert engine.grid_state.rows[7].status == "OWNED:ORD-BRIDGE|TRIM_SELL:ORD-TRIM"
+
+
+@pytest.mark.asyncio
+async def test_bridge_anchor_failed_cancel_halts(mock_broker, mock_sheet, config):
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    engine.order_manager.track(7, OrderResult(order_id="ORD-BRIDGE", status="submitted"), 'BRIDGE_BUY')
+
+    mock_sheet.fetch_grid.return_value = setup_grid_state([
+        {'row_index': 7, 'status': 'WORKING_SELL:ORD-SELL-7'},
+        {'row_index': 8, 'status': 'OWNED:123'}
+    ])
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 20})
+
+    mock_broker.cancel_order.return_value = False
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-BRIDGE'}] # Order still active!
+
+    await engine._tick()
+
+    assert engine._bridge_state == 'BRIDGE_HALTED'
+    # Wait, in the actual loop, _cancel_bridge_anchor is awaited and sets BRIDGE_HALTED and returns.
+    # However, because of how engine loops, if the row 7 is idle and not armed, it calls clear_action_for_row directly there.
+    # Let's fix the engine so it doesn't clear if bridge halted.
+
+@pytest.mark.asyncio
+async def test_bridge_anchor_retrack_trim_pending(mock_broker, mock_sheet, config):
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    mock_sheet.fetch_grid.return_value = setup_grid_state([
+        {'row_index': 7, 'status': 'OWNED:OLD-ID|TRIM_SELL:ORD-TRIM', 'shares': 50}
+    ])
+
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 52})
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-TRIM', 'qty': 2}]
+
+    await engine._tick()
+
+    assert engine.order_manager.has_open_action(7, 'TRIM_SELL')
+    assert engine._bridge_state == 'TRIM_PENDING'
+    assert engine._pending_trim_qty == 2
+
+@pytest.mark.asyncio
+async def test_bridge_anchor_retrack_trim_pending_no_qty_in_order(mock_broker, mock_sheet, config):
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    mock_sheet.fetch_grid.return_value = setup_grid_state([
+        {'row_index': 7, 'status': 'OWNED:OLD-ID|TRIM_SELL:ORD-TRIM', 'shares': 50}
+    ])
+
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 54})
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-TRIM'}] # no qty key in some brokers maybe
+
+    await engine._tick()
+
+    assert engine.order_manager.has_open_action(7, 'TRIM_SELL')
+    assert engine._bridge_state == 'TRIM_PENDING'
+    assert engine._pending_trim_qty == 4
