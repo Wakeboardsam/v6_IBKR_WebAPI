@@ -78,6 +78,7 @@ class GridEngine:
         self._bridge_state: str = 'IDLE' # Can be 'IDLE', 'ARMED', 'ANCHOR_RECALC_PENDING', 'TRIM_PENDING', 'BRIDGE_HALTED'
         self._pending_trim_qty = 0
         self._bridge_shares_acquired: int = 0
+        self._bridge_fill_price: float = 0.0
 
     def _parse_hhmm(self, value: str) -> time:
         try:
@@ -542,40 +543,15 @@ class GridEngine:
                     row.status = pending_status
                     row.has_y = pending_status.startswith("OWNED:") or pending_status.startswith("WORKING_SELL:")
 
-        # 2.5 Quick scan for active TRIM_SELL to re-establish bridge state before circuit breaker
-        open_orders = await self.broker.get_open_orders()
-        broker_order_ids = {str(o['order_id']) for o in open_orders}
-
-        if self._bridge_state != 'TRIM_PENDING':
-            for row in self.grid_state.rows.values():
-                status_parts = row.status.split('|')
-                for part in status_parts:
-                    if part.startswith("TRIM_SELL:"):
-                        trim_order_id = part.split(":")[1]
-                        if trim_order_id in broker_order_ids and not self.order_manager.is_tracked(trim_order_id):
-                            logger.info(f"Re-tracking TRIM_SELL order {trim_order_id} from sheet status for row {row.row_index}")
-                            self.order_manager.track(row.row_index, OrderResult(order_id=trim_order_id, status='submitted'), 'TRIM_SELL',
-                                                broker=self.broker, on_update=self._handle_order_update)
-
-                            self._bridge_state = 'TRIM_PENDING'
-                            for open_o in open_orders:
-                                if str(open_o['order_id']) == trim_order_id:
-                                    self._pending_trim_qty = open_o.get('qty', 0)
-                                    break
-
-                            if not self._pending_trim_qty:
-                                snapshot = await self.broker.get_position_snapshot()
-                                broker_shares = snapshot.positions.get(TICKER, 0)
-                                sheet_shares = sum(r.shares for r in self.grid_state.rows.values() if r.has_y)
-                                if broker_shares > sheet_shares:
-                                    self._pending_trim_qty = broker_shares - sheet_shares
-                                else:
-                                    logger.error("Re-tracked TRIM_SELL but no excess shares exist. Halting bridge flow.")
-                                    self._bridge_state = 'BRIDGE_HALTED'
-                                    return
-
-                            logger.info(f"Restored TRIM_PENDING state with pending trim quantity: {self._pending_trim_qty}")
-                            break
+        # 1.2 Bridge Anchor wait for sheet recalculation
+        if self._bridge_state == 'ANCHOR_RECALC_PENDING':
+            # check if row 7 sell price reflects the new anchor
+            row7 = self.grid_state.rows.get(7)
+            if row7 and self._bridge_fill_price > 0 and abs(row7.sell_price - self._bridge_fill_price) > 0.01:
+                logger.info(f"ANCHOR_RECALC_PENDING: Waiting for sheet to recalculate. Row 7 sell price ({row7.sell_price}) does not match bridge fill price ({self._bridge_fill_price}).")
+                return
+            else:
+                logger.debug(f"ANCHOR_RECALC_PENDING: Sheet recalculated correctly (Row 7 sell price matches {self._bridge_fill_price}).")
 
         # 3. Circuit Breaker
         snapshot = await self.broker.get_position_snapshot()
@@ -604,6 +580,36 @@ class GridEngine:
         # 4. Get current open orders for evaluation (needed for both reconciliation and grid eval)
         open_orders = await self.broker.get_open_orders()
         broker_order_ids = {str(o['order_id']) for o in open_orders}
+
+        # Quick scan for active TRIM_SELL to re-establish bridge state before circuit breaker
+        if self._bridge_state != 'TRIM_PENDING':
+            for row in self.grid_state.rows.values():
+                status_parts = row.status.split('|')
+                for part in status_parts:
+                    if part.startswith("TRIM_SELL:"):
+                        trim_order_id = part.split(":")[1]
+                        if trim_order_id in broker_order_ids and not self.order_manager.is_tracked(trim_order_id):
+                            logger.info(f"Re-tracking TRIM_SELL order {trim_order_id} from sheet status for row {row.row_index}")
+                            self.order_manager.track(row.row_index, OrderResult(order_id=trim_order_id, status='submitted'), 'TRIM_SELL',
+                                                broker=self.broker, on_update=self._handle_order_update)
+
+                            self._bridge_state = 'TRIM_PENDING'
+                            for open_o in open_orders:
+                                if str(open_o['order_id']) == trim_order_id:
+                                    self._pending_trim_qty = open_o.get('qty', 0)
+                                    break
+
+                            if not self._pending_trim_qty:
+                                sheet_shares = sum(r.shares for r in self.grid_state.rows.values() if r.has_y)
+                                if broker_shares > sheet_shares:
+                                    self._pending_trim_qty = broker_shares - sheet_shares
+                                else:
+                                    logger.error("Re-tracked TRIM_SELL but no excess shares exist. Halting bridge flow.")
+                                    self._bridge_state = 'BRIDGE_HALTED'
+                                    return
+
+                            logger.info(f"Restored TRIM_PENDING state with pending trim quantity: {self._pending_trim_qty}")
+                            break
 
         if broker_shares != sheet_shares:
             delta = broker_shares - sheet_shares
@@ -1016,6 +1022,7 @@ class GridEngine:
                     logger.info(f"Bridge Anchor BUY filled for row 7. Price: {result.filled_price}, Qty: {result.filled_qty}")
                     self._bridge_state = 'ANCHOR_RECALC_PENDING'
                     self._bridge_shares_acquired = result.filled_qty if result.filled_qty else 0
+                    self._bridge_fill_price = result.filled_price if result.filled_price else 0.0
 
                     # Update status to OWNED temporarily
                     new_status = f"OWNED:{order_id}"

@@ -373,3 +373,44 @@ async def test_bridge_anchor_delayed_sell_fill_ignored(mock_broker, mock_sheet, 
     # 5. Row 7 must remain OWNED:<bridge_id>, not IDLE
     assert engine.grid_state.rows[7].status == 'OWNED:ORD-BRIDGE'
     assert engine._bridge_state == 'ANCHOR_RECALC_PENDING'
+
+@pytest.mark.asyncio
+async def test_bridge_anchor_wait_for_recalc(mock_broker, mock_sheet, config):
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    engine._bridge_state = 'ANCHOR_RECALC_PENDING'
+    engine._bridge_fill_price = 105.0
+
+    mock_sheet.fetch_grid.return_value = setup_grid_state([
+        {'row_index': 7, 'status': 'OWNED:ORD-BRIDGE', 'sell_price': 100.0, 'shares': 50}
+    ])
+
+    # mock broker to perfectly match shares
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 50})
+    mock_broker.get_open_orders.return_value = []
+
+    await engine._tick()
+
+    # because row 7 sell price (100.0) != 105.0, it should return early
+    # it shouldn't log "Shares match perfectly" or clear the state
+    assert engine._bridge_state == 'ANCHOR_RECALC_PENDING'
+    mock_broker.get_open_orders.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_bridge_anchor_recalc_complete(mock_broker, mock_sheet, config):
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    engine._bridge_state = 'ANCHOR_RECALC_PENDING'
+    engine._bridge_fill_price = 105.0
+
+    mock_sheet.fetch_grid.return_value = setup_grid_state([
+        {'row_index': 7, 'status': 'OWNED:ORD-BRIDGE', 'sell_price': 105.0, 'shares': 50}
+    ])
+
+    # mock broker to perfectly match shares
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 50})
+    mock_broker.get_open_orders.return_value = []
+
+    await engine._tick()
+
+    # because row 7 sell price (105.0) == 105.0, it proceeds. Broker matches sheet perfectly.
+    # Should clear the state.
+    assert engine._bridge_state is None

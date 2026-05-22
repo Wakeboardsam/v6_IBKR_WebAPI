@@ -426,7 +426,7 @@ async def test_engine_tick_unknown_state_returns_early():
     # The grid state should be fetched (step 1), but then the snapshot check happens.
     # It should log a warning and return BEFORE fetching open orders or checking mismatch.
     mock_sheet.fetch_grid.assert_called_once()
-    mock_broker.get_open_orders.assert_called()
+    mock_broker.get_open_orders.assert_not_called()
     mock_sheet.log_error.assert_not_called()
     mock_broker.place_limit_order.assert_not_called()
 
