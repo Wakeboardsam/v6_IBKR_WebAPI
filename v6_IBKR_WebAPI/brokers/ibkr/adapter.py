@@ -422,6 +422,74 @@ class IBKRAdapter(BrokerBase):
                 reason=status
             )
 
+    async def place_stop_limit_order(
+        self, ticker: str, action: str,
+        qty: int, stop_price: float, limit_price: float,
+        extended_hours: bool = True,
+        on_update: Optional[Callable] = None,
+        order_id: Optional[str] = None
+    ) -> OrderResult:
+        from brokers.ibkr.order_builder import get_dynamic_exchange, get_dynamic_tif
+        from ib_insync import StopLimitOrder
+        exchange = get_dynamic_exchange()
+        tif = get_dynamic_tif(exchange)
+        logger.info(f"Session mode: {exchange} / {tif} (Stop Limit)")
+        contract = Stock(ticker, exchange, 'USD', primaryExchange='NASDAQ')
+        await self.ib.qualifyContractsAsync(contract)
+
+        order = StopLimitOrder(action, totalQuantity=qty, lmtPrice=limit_price, stopPrice=stop_price)
+        order.tif = tif
+        order.outsideRth = False if exchange == 'OVERNIGHT' else True
+        order.overridePercentageConstraints = True
+
+        if order_id:
+            order.orderId = int(order_id)
+        else:
+            order.orderId = self.ib.client.getReqId()
+
+        final_order_id = str(order.orderId)
+
+        if on_update:
+            self._on_update_callbacks[final_order_id] = on_update
+
+        trade = self.ib.placeOrder(contract, order)
+
+        while not trade.isDone() and trade.orderStatus.status not in ('Submitted', 'PreSubmitted'):
+            await asyncio.sleep(0.1)
+            if order.orderId in self._last_error:
+                err_code, err_msg = self._last_error[order.orderId]
+                if err_code == 10329:
+                    return OrderResult(
+                        order_id=final_order_id,
+                        status='error',
+                        error_code=err_code,
+                        error_msg=err_msg
+                    )
+
+        status = trade.orderStatus.status
+        if status in ('Submitted', 'PreSubmitted'):
+            return OrderResult(order_id=final_order_id, status='submitted')
+        elif status == 'Filled':
+            return OrderResult(
+                order_id=final_order_id,
+                status='filled',
+                filled_price=trade.orderStatus.avgFillPrice,
+                filled_qty=trade.orderStatus.filled
+            )
+        else:
+            err_code = None
+            err_msg = trade.orderStatus.whyHeld or f"Order failed with status: {status}"
+            if order.orderId in self._last_error:
+                err_code, err_msg = self._last_error[order.orderId]
+
+            return OrderResult(
+                order_id=final_order_id,
+                status='error',
+                error_code=err_code,
+                error_msg=err_msg,
+                reason=status
+            )
+
     def subscribe_to_updates(self, order_id: str, on_update: Callable):
         self._on_update_callbacks[order_id] = on_update
 

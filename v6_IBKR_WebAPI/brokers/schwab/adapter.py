@@ -44,6 +44,15 @@ class SchwabAdapter(BrokerBase):
     async def get_open_orders(self) -> list[dict]:
         raise NotImplementedError
 
+    async def place_stop_limit_order(
+        self, ticker: str, action: str,
+        qty: int, stop_price: float, limit_price: float,
+        extended_hours: bool = True,
+        on_update: Optional[Callable] = None,
+        order_id: Optional[str] = None
+    ) -> OrderResult:
+        raise NotImplementedError
+
     async def place_limit_order(
         self, ticker: str, action: str,
         qty: int, limit_price: float,

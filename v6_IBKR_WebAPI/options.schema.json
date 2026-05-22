@@ -18,5 +18,7 @@
   "maintenance_enabled": "bool",
   "maintenance_start_local": "str",
   "maintenance_end_local": "str",
-  "maintenance_cancel_open_orders": "bool"
+  "maintenance_cancel_open_orders": "bool",
+  "enable_bridge_anchor": "bool",
+  "bridge_max_auto_trim_shares": "int"
 }
