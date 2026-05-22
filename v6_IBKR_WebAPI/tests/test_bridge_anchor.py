@@ -180,3 +180,39 @@ async def test_bridge_anchor_cleanup(mock_broker, mock_sheet, config):
 # 11. Testing session behavior dynamic inherited
 # Assuming it inherits adapter defaults since we pass True for outsideRth, etc implicitly based on order builder
 # We verify the adapter call itself is correct, which we did in test 1.
+
+@pytest.mark.asyncio
+async def test_bridge_trim_fill_preserves_owned(mock_broker, mock_sheet, config):
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    engine.grid_state = setup_grid_state([
+        {'row_index': 7, 'status': 'OWNED:OLD-ID|TRIM_SELL:ORD-TRIM', 'shares': 50}
+    ])
+
+    engine.order_manager.track(7, OrderResult(order_id="ORD-TRIM", status="submitted"), 'TRIM_SELL')
+
+    fill_result = OrderResult(order_id="ORD-TRIM", status="filled", filled_price=105.0, filled_qty=2)
+    engine._handle_order_update(fill_result)
+
+    # Check that status wasn't blown away to IDLE, but is OWNED:OLD-ID
+    await asyncio.sleep(0.01)
+
+    # We don't have direct access to memory assert simply here without accessing internal calls
+    # but we can look at what would be passed to sync_to_sheet if we mocked the update
+    # In engine, memory is updated directly: self.grid_state.rows[7].status
+    assert engine.grid_state.rows[7].status == "OWNED:OLD-ID"
+
+@pytest.mark.asyncio
+async def test_bridge_retrack_orders(mock_broker, mock_sheet, config):
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    mock_sheet.fetch_grid.return_value = setup_grid_state([
+        {'row_index': 7, 'status': 'WORKING_SELL:ORD-SELL-7|BRIDGE_BUY:ORD-BRIDGE', 'shares': 50, 'sell_price': 105.0}
+    ])
+
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-BRIDGE'}, {'order_id': 'ORD-SELL-7'}]
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 50})
+
+    await engine._tick()
+
+    # Verify both got re-tracked
+    assert engine.order_manager.has_open_sell(7)
+    assert engine.order_manager.has_open_action(7, 'BRIDGE_BUY')

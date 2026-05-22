@@ -436,6 +436,9 @@ class GridEngine:
         # Bridge limit price should use anchor_buy_offset as chase limit
         limit_price = row7.sell_price + self.config.anchor_buy_offset
 
+        # Pre-register locally FIRST to prevent race conditions
+        self.order_manager.track(7, OrderResult(order_id=bridge_order_id, status='submitted'), 'BRIDGE_BUY', broker=self.broker, on_update=self._handle_order_update)
+
         result = await self.broker.place_stop_limit_order(
             ticker=TICKER, action='BUY', qty=row7.shares,
             stop_price=stop_price, limit_price=limit_price,
@@ -444,11 +447,9 @@ class GridEngine:
 
         if result.status == 'error':
             logger.error(f"Failed to place Bridge Anchor order: {result.error_msg}")
+            self.order_manager.clear_action_for_row(7, 'BRIDGE_BUY')
         else:
             logger.info(f"Bridge Anchor order {bridge_order_id} placed. Stop: {stop_price}, Limit: {limit_price}")
-
-            # Pre-register locally ONLY on success to prevent dangling failed orders
-            self.order_manager.track(7, OrderResult(order_id=bridge_order_id, status='submitted'), 'BRIDGE_BUY', broker=self.broker, on_update=self._handle_order_update)
 
             # Update sheet status with pipe-delimited status
             current_status = row7.status
@@ -547,7 +548,17 @@ class GridEngine:
             delta = broker_shares - sheet_shares
 
             # Bridge exception: Allow mismatch during bridge recalcs
-            if self._bridge_state in ('ANCHOR_RECALC_PENDING', 'TRIM_PENDING'):
+            bridge_mismatch_allowed = False
+            if self._bridge_state == 'ANCHOR_RECALC_PENDING' and delta >= 0:
+                # Still recalculating, allow broker to have equal or more shares (since we just bought)
+                bridge_mismatch_allowed = True
+            elif self._bridge_state == 'TRIM_PENDING' and delta > 0:
+                # Allow excess mismatch exactly equal to our pending trim amount?
+                # Actually, the excess can be anything as long as we're trimming. But let's be strict:
+                # If we're trimming, broker_shares > sheet_shares.
+                bridge_mismatch_allowed = True
+
+            if bridge_mismatch_allowed:
                 logger.info(f"Allowing share mismatch (Broker: {broker_shares}, Sheet: {sheet_shares}) due to bridge state {self._bridge_state}.")
                 # Skip the rest of mismatch handling by continuing down to normal grid execution if allowed
             else:
@@ -619,6 +630,11 @@ class GridEngine:
         window_end = max(7, distal_y + 3)
         window_range = range(window_start, window_end + 1)
 
+        # If bridge flow is halted, stop ALL grid execution and halt the tick
+        if getattr(self, '_bridge_state', None) == 'BRIDGE_HALTED':
+            logger.critical("Bot is in BRIDGE_HALTED state. Manual review required. Skipping grid evaluation.")
+            return
+
         # Bridge Exception: Handle Trim Pending check
         if self._bridge_state == 'ANCHOR_RECALC_PENDING':
             if row7 := self.grid_state.rows.get(7):
@@ -638,14 +654,16 @@ class GridEngine:
                             logger.error(f"Cannot auto-trim: current bid {current_bid} is invalid.")
                             msg = f"Bridge flow halted: Cannot auto-trim excess {excess} shares because bid is invalid."
                             await self.sheet.log_error(msg)
-                            self._bridge_state = None # Halt flow
+                            self._bridge_state = 'BRIDGE_HALTED'
+                            return
                         else:
                             trim_limit_price = current_bid - self.config.anchor_buy_offset
                             if trim_limit_price <= 0:
                                 logger.error(f"Cannot auto-trim: trim limit price {trim_limit_price} is <= 0.")
                                 msg = f"Bridge flow halted: Cannot auto-trim excess {excess} shares because limit price is <= 0."
                                 await self.sheet.log_error(msg)
-                                self._bridge_state = None # Halt flow
+                                self._bridge_state = 'BRIDGE_HALTED'
+                                return
                             else:
                                 trim_order_id = await self.broker.get_next_order_id()
                                 self.order_manager.track(7, OrderResult(order_id=trim_order_id, status='submitted'), 'TRIM_SELL', broker=self.broker, on_update=self._handle_order_update)
@@ -657,7 +675,8 @@ class GridEngine:
                                 )
                                 if result.status == 'error':
                                     logger.error(f"Failed to place trim SELL order: {result.error_msg}")
-                                    self._bridge_state = None
+                                    self._bridge_state = 'BRIDGE_HALTED'
+                                    return
                                 else:
                                     logger.info(f"Trim SELL placed. Limit: {trim_limit_price}")
                                     self._bridge_state = 'TRIM_PENDING'
@@ -665,12 +684,14 @@ class GridEngine:
                         msg = f"Bridge flow halted: Excess shares ({excess}) exceed bridge_max_auto_trim_shares ({self.config.bridge_max_auto_trim_shares})."
                         logger.error(msg)
                         await self.sheet.log_error(msg)
-                        self._bridge_state = None # Halt flow
+                        self._bridge_state = 'BRIDGE_HALTED'
+                        return
                 elif broker_shares < tracker_shares:
                     msg = f"Bridge flow halted: Broker shares ({broker_shares}) are FEWER than recalculated row 7 shares ({tracker_shares})."
                     logger.error(msg)
                     await self.sheet.log_error(msg)
-                    self._bridge_state = None # Halt flow
+                    self._bridge_state = 'BRIDGE_HALTED'
+                    return
                 else:
                     logger.info("Bridge recalc complete. Shares match perfectly. Resuming normal operations.")
                     self._bridge_state = None
@@ -717,12 +738,18 @@ class GridEngine:
                     # Parse existing status to check for current orders and historical IDs
                     status_parts = row.status.split('|')
                     active_order_id = None
+                    bridge_order_id = None
+                    trim_order_id = None
                     owned_id = None
                     for part in status_parts:
                         if part.startswith("WORKING_SELL:") or part.startswith("WORKING_BUY:"):
                             active_order_id = part.split(":")[1]
                         elif part.startswith("OWNED:"):
                             owned_id = part.split(":")[1]
+                        elif part.startswith("BRIDGE_BUY:"):
+                            bridge_order_id = part.split(":")[1]
+                        elif part.startswith("TRIM_SELL:"):
+                            trim_order_id = part.split(":")[1]
 
                     # If an order is in Column C but not tracked, subscribe/track it
                     if active_order_id and active_order_id in broker_order_ids:
@@ -730,6 +757,18 @@ class GridEngine:
                             logger.info(f"Re-tracking order {active_order_id} from sheet status for row {row.row_index}")
                             action = 'SELL' if "WORKING_SELL" in row.status else 'BUY'
                             self.order_manager.track(row.row_index, OrderResult(order_id=active_order_id, status='submitted'), action,
+                                                broker=self.broker, on_update=self._handle_order_update)
+
+                    if bridge_order_id and bridge_order_id in broker_order_ids:
+                        if not self.order_manager.is_tracked(bridge_order_id):
+                            logger.info(f"Re-tracking BRIDGE_BUY order {bridge_order_id} from sheet status for row {row.row_index}")
+                            self.order_manager.track(row.row_index, OrderResult(order_id=bridge_order_id, status='submitted'), 'BRIDGE_BUY',
+                                                broker=self.broker, on_update=self._handle_order_update)
+
+                    if trim_order_id and trim_order_id in broker_order_ids:
+                        if not self.order_manager.is_tracked(trim_order_id):
+                            logger.info(f"Re-tracking TRIM_SELL order {trim_order_id} from sheet status for row {row.row_index}")
+                            self.order_manager.track(row.row_index, OrderResult(order_id=trim_order_id, status='submitted'), 'TRIM_SELL',
                                                 broker=self.broker, on_update=self._handle_order_update)
 
                     if in_window:
@@ -905,6 +944,14 @@ class GridEngine:
                     # Update status in sheet via memory-first sync
                     if action == 'BUY':
                         new_status = f"OWNED:{order_id}"
+                    elif action == 'TRIM_SELL':
+                        # Preserve OWNED status with existing ID (from before the trim)
+                        owned_id = "0"
+                        if self.grid_state and row_index in self.grid_state.rows:
+                            status_str = self.grid_state.rows[row_index].status
+                            if "OWNED:" in status_str:
+                                owned_id = _extract_order_id_from_status(status_str, "OWNED:") or "0"
+                        new_status = f"OWNED:{owned_id}"
                     else: # SELL
                         new_status = "IDLE"
 
@@ -933,6 +980,15 @@ class GridEngine:
                     # Revert status immediately so sheet doesn't show WORKING indefinitely if _tick is slow
                     if action == 'SELL':
                         # Try to find existing ID or use 0
+                        owned_id = "0"
+                        if self.grid_state and row_index in self.grid_state.rows:
+                            status = self.grid_state.rows[row_index].status
+                            if "OWNED:" in status:
+                                owned_id = status.split("OWNED:")[1].split("|")[0]
+                        new_status = f"OWNED:{owned_id}"
+                    elif action == 'TRIM_SELL':
+                        self._bridge_state = 'BRIDGE_HALTED'
+                        logger.error(f"TRIM_SELL order {order_id} errored. Halting bridge flow.")
                         owned_id = "0"
                         if self.grid_state and row_index in self.grid_state.rows:
                             status = self.grid_state.rows[row_index].status
