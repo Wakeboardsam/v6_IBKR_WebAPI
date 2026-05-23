@@ -547,11 +547,11 @@ class GridEngine:
         if self._bridge_state == 'ANCHOR_RECALC_PENDING':
             # check if row 7 sell price reflects the new anchor
             row7 = self.grid_state.rows.get(7)
-            if row7 and self._bridge_fill_price > 0 and abs(row7.sell_price - self._bridge_fill_price) > 0.01:
-                logger.info(f"ANCHOR_RECALC_PENDING: Waiting for sheet to recalculate. Row 7 sell price ({row7.sell_price}) does not match bridge fill price ({self._bridge_fill_price}).")
+            if row7 and self._bridge_fill_price > 0 and abs(row7.buy_price - self._bridge_fill_price) > 0.01:
+                logger.info(f"ANCHOR_RECALC_PENDING: Waiting for sheet to recalculate. Row 7 buy price ({row7.buy_price}) does not match bridge fill price ({self._bridge_fill_price}).")
                 return
             else:
-                logger.debug(f"ANCHOR_RECALC_PENDING: Sheet recalculated correctly (Row 7 sell price matches {self._bridge_fill_price}).")
+                logger.debug(f"ANCHOR_RECALC_PENDING: Sheet recalculated correctly (Row 7 buy price matches {self._bridge_fill_price}).")
 
         # 3. Circuit Breaker
         snapshot = await self.broker.get_position_snapshot()

@@ -381,7 +381,7 @@ async def test_bridge_anchor_wait_for_recalc(mock_broker, mock_sheet, config):
     engine._bridge_fill_price = 105.0
 
     mock_sheet.fetch_grid.return_value = setup_grid_state([
-        {'row_index': 7, 'status': 'OWNED:ORD-BRIDGE', 'sell_price': 100.0, 'shares': 50}
+        {'row_index': 7, 'status': 'OWNED:ORD-BRIDGE', 'buy_price': 100.0, 'shares': 50}
     ])
 
     # mock broker to perfectly match shares
@@ -402,7 +402,7 @@ async def test_bridge_anchor_recalc_complete(mock_broker, mock_sheet, config):
     engine._bridge_fill_price = 105.0
 
     mock_sheet.fetch_grid.return_value = setup_grid_state([
-        {'row_index': 7, 'status': 'OWNED:ORD-BRIDGE', 'sell_price': 105.0, 'shares': 50}
+        {'row_index': 7, 'status': 'OWNED:ORD-BRIDGE', 'buy_price': 105.0, 'shares': 50}
     ])
 
     # mock broker to perfectly match shares
