@@ -10,7 +10,7 @@ class OrderManager:
         self._row_to_orders: Dict[Any, Set[str]] = {}
         # Mapping of order_id to (row_index, action)
         self._order_map: Dict[str, Tuple[Any, str]] = {}
-        # Mapping of row_index to action ('BUY' or 'SELL')
+        # Mapping of row_index to action ('BUY' or 'SELL'). Kept for backwards compatibility.
         self._row_actions: Dict[Any, str] = {}
 
     def track(self, row_index: Any, order_result: OrderResult, action: str = None,
@@ -21,7 +21,11 @@ class OrderManager:
         If broker and on_update are provided, subscribes to updates for each order.
         """
         if action:
-            self._row_actions[row_index] = action.upper()
+            final_action = action.upper()
+            if final_action in ('BUY', 'SELL'):
+                self._row_actions[row_index] = final_action
+        else:
+            final_action = self._row_actions.get(row_index, "UNKNOWN")
 
         order_ids = order_result.order_id.split('|')
 
@@ -30,18 +34,48 @@ class OrderManager:
 
         for oid in order_ids:
             self._row_to_orders[row_index].add(oid)
-            self._order_map[oid] = (row_index, self._row_actions[row_index])
+            self._order_map[oid] = (row_index, final_action)
             if broker and on_update:
                 broker.subscribe_to_updates(oid, on_update)
 
-        logger.info(f"Tracking {self._row_actions[row_index]} row {row_index} with order(s): {order_ids}")
+        logger.info(f"Tracking {final_action} row {row_index} with order(s): {order_ids}")
 
     def has_open_buy(self, row_index: Any) -> bool:
-        return row_index in self._row_to_orders and self._row_actions.get(row_index) == "BUY"
+        return self.has_open_action(row_index, 'BUY') or (row_index in self._row_to_orders and self._row_actions.get(row_index) == "BUY")
 
     def has_open_sell(self, row_index: Any) -> bool:
-        return row_index in self._row_to_orders and self._row_actions.get(row_index) == "SELL"
+        return self.has_open_action(row_index, 'SELL') or (row_index in self._row_to_orders and self._row_actions.get(row_index) == "SELL")
 
+    def has_open_action(self, row_index: Any, target_action: str) -> bool:
+        if row_index not in self._row_to_orders: return False
+        for oid in self._row_to_orders[row_index]:
+            if self._order_map.get(oid, (None, None))[1] == target_action.upper():
+                return True
+        return False
+
+    def get_order_ids_for_action(self, row_index: Any, target_action: str) -> List[str]:
+        if row_index not in self._row_to_orders: return []
+        return [oid for oid in self._row_to_orders[row_index] if self._order_map.get(oid, (None, None))[1] == target_action.upper()]
+
+    def clear_action_for_row(self, row_index: Any, target_action: str) -> List[str]:
+        """
+        Clears all tracking for orders matching the target action on the given row.
+        Returns the list of order_ids that were removed.
+        """
+        removed = []
+        if row_index not in self._row_to_orders:
+            return removed
+
+        oids_to_remove = [oid for oid in self._row_to_orders[row_index] if self._order_map.get(oid, (None, None))[1] == target_action.upper()]
+        for oid in oids_to_remove:
+            self._row_to_orders[row_index].discard(oid)
+            self._order_map.pop(oid, None)
+            removed.append(oid)
+
+        if not self._row_to_orders[row_index]:
+            del self._row_to_orders[row_index]
+
+        return removed
     def mark_filled(self, order_id: str) -> Tuple[Optional[Any], Optional[str]]:
         return self._remove_order(order_id, "filled")
 

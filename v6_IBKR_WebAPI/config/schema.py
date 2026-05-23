@@ -23,3 +23,5 @@ class AppConfig(BaseModel):
     maintenance_start_local: str = Field(default="23:44")
     maintenance_end_local: str = Field(default="00:00")
     maintenance_cancel_open_orders: bool = Field(default=True)
+    enable_bridge_anchor: bool = Field(default=True)
+    bridge_max_auto_trim_shares: int = Field(default=5)

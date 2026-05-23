@@ -58,6 +58,15 @@ class BrokerBase(ABC):
     ) -> OrderResult: ...
 
     @abstractmethod
+    async def place_stop_limit_order(
+        self, ticker: str, action: str,
+        qty: int, stop_price: float, limit_price: float,
+        extended_hours: bool = True,
+        on_update: Optional[Callable] = None,
+        order_id: Optional[str] = None
+    ) -> OrderResult: ...
+
+    @abstractmethod
     async def place_limit_order(
         self, ticker: str, action: str,
         qty: int, limit_price: float,
