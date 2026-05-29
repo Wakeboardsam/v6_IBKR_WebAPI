@@ -73,7 +73,7 @@ async def test_bridge_anchor_arms_correctly(mock_exchange, mock_broker, mock_she
     await engine._tick()
 
     # Check stop limit order was placed
-    mock_broker.place_stop_limit_order.assert_called_with(
+    mock_broker.place_stop_limit_order.assert_called_once_with(
         ticker="TQQQ", action="BUY", qty=50,
         stop_price=105.0, limit_price=106.5, # 105.0 + 1.5 offset
         on_update=engine._handle_order_update, order_id="ORD-BRIDGE"
@@ -436,16 +436,13 @@ async def test_bridge_anchor_skipped_during_overnight(mock_exchange, mock_broker
     # (there are multiple checks, one in early tick, one in bridge eval)
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 50})
 
-    # We also have to track get_next_order_id calls
-    original_call_count = mock_broker.get_next_order_id.call_count
-
     await engine._tick()
 
     # Bridge Anchor should not be placed during OVERNIGHT
     mock_broker.place_stop_limit_order.assert_not_called()
-    # Since normal tick logic runs, it might do something, but it shouldn't place BRIDGE_BUY
     assert not engine.order_manager.has_open_action(7, 'BRIDGE_BUY')
     assert "BRIDGE_BUY" not in engine.grid_state.rows[7].status
+    assert "BRIDGE_BUY" not in engine.pending_status_updates.get(7, "")
 
 @pytest.mark.asyncio
 @patch('brokers.ibkr.order_builder.get_dynamic_exchange', return_value='SMART')
