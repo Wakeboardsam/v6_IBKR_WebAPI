@@ -452,6 +452,11 @@ class GridEngine:
         if self.order_manager.has_open_action(7, 'BRIDGE_BUY'):
             return
 
+        from brokers.ibkr.order_builder import get_dynamic_exchange
+        if get_dynamic_exchange() == "OVERNIGHT":
+            logger.warning("Skipping Bridge Anchor during OVERNIGHT session because IBKR does not support STP LMT on OVERNIGHT.")
+            return
+
         # All conditions met, arm the Bridge Anchor!
         logger.info(f"Arming Bridge Anchor for row 7. Shares: {row7.shares}, Sell Target: {row7.sell_price}")
 

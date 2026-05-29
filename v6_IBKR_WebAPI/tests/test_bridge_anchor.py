@@ -56,7 +56,8 @@ def setup_grid_state(rows_data):
 
 # 1. Bridge Anchor arms when row 7 is the only owned row and has WORKING_SELL.
 @pytest.mark.asyncio
-async def test_bridge_anchor_arms_correctly(mock_broker, mock_sheet, config):
+@patch('brokers.ibkr.order_builder.get_dynamic_exchange', return_value='SMART')
+async def test_bridge_anchor_arms_correctly(mock_exchange, mock_broker, mock_sheet, config):
     engine = GridEngine(mock_broker, mock_sheet, config)
     mock_sheet.fetch_grid.return_value = setup_grid_state([
         {'row_index': 7, 'status': 'WORKING_SELL:ORD-SELL-7', 'shares': 50, 'sell_price': 105.0},
@@ -414,3 +415,50 @@ async def test_bridge_anchor_recalc_complete(mock_broker, mock_sheet, config):
     # because row 7 sell price (105.0) == 105.0, it proceeds. Broker matches sheet perfectly.
     # Should clear the state.
     assert engine._bridge_state is None
+
+@pytest.mark.asyncio
+@patch('brokers.ibkr.order_builder.get_dynamic_exchange', return_value='OVERNIGHT')
+async def test_bridge_anchor_skipped_during_overnight(mock_exchange, mock_broker, mock_sheet, config):
+    mock_broker.get_next_order_id.side_effect = ["ORD-ID-1", "ORD-ID-2", "ORD-ID-3"]
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    mock_sheet.fetch_grid.return_value = setup_grid_state([
+        {'row_index': 7, 'status': 'WORKING_SELL:ORD-SELL-7', 'shares': 50, 'sell_price': 105.0},
+        {'row_index': 8, 'status': 'IDLE'}
+    ])
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 50})
+
+    # Explicitly track the SELL order to satisfy condition 4
+    engine.order_manager.track(7, OrderResult(order_id="ORD-SELL-7", status="submitted"), 'SELL')
+
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-SELL-7'}]
+
+    # Explicitly mock so condition 3 in engine.py passes
+    # (there are multiple checks, one in early tick, one in bridge eval)
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 50})
+
+    await engine._tick()
+
+    # Bridge Anchor should not be placed during OVERNIGHT
+    mock_broker.place_stop_limit_order.assert_not_called()
+    assert not engine.order_manager.has_open_action(7, 'BRIDGE_BUY')
+    assert "BRIDGE_BUY" not in engine.grid_state.rows[7].status
+    assert "BRIDGE_BUY" not in engine.pending_status_updates.get(7, "")
+
+@pytest.mark.asyncio
+@patch('brokers.ibkr.order_builder.get_dynamic_exchange', return_value='SMART')
+async def test_bridge_anchor_arms_during_smart(mock_exchange, mock_broker, mock_sheet, config):
+    mock_broker.get_next_order_id.side_effect = ["ORD-BRIDGE", "ORD-ID-1", "ORD-ID-2"]
+    engine = GridEngine(mock_broker, mock_sheet, config)
+    mock_sheet.fetch_grid.return_value = setup_grid_state([
+        {'row_index': 7, 'status': 'WORKING_SELL:ORD-SELL-7', 'shares': 50, 'sell_price': 105.0},
+        {'row_index': 8, 'status': 'IDLE'}
+    ])
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 50})
+
+    # Explicitly track the SELL order to satisfy condition 4
+    engine.order_manager.track(7, OrderResult(order_id="ORD-SELL-7", status="submitted"), 'SELL')
+
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-SELL-7'}]
+
+    # Explicitly mock so condition 3 in engine.py passes
+    mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 50})
