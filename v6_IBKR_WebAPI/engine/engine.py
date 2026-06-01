@@ -53,7 +53,16 @@ def _find_unique_combination(target_sum: int, candidates: List[GridRow]) -> Opti
         return valid_combinations[0]
     return None
 
+
+def _remove_status_part(status: str, prefix: str) -> str:
+    parts = status.split('|')
+    kept = [p for p in parts if not p.startswith(prefix)]
+    if not any(p.startswith('OWNED:') for p in kept) and not any(p.startswith('WORKING_SELL:') for p in kept):
+        kept.insert(0, "OWNED:0")
+    return '|'.join(kept)
+
 class GridEngine:
+
     def __init__(self, broker: BrokerBase, sheet: SheetInterface, config: AppConfig):
         self.broker = broker
         self.sheet = sheet
@@ -616,6 +625,98 @@ class GridEngine:
                             logger.info(f"Restored TRIM_PENDING state with pending trim quantity: {self._pending_trim_qty}")
                             break
 
+        # Explicit stale-session cleanup
+        from brokers.ibkr.order_builder import get_dynamic_exchange, get_dynamic_tif
+        current_desired_exchange = get_dynamic_exchange()
+        current_desired_tif = get_dynamic_tif(current_desired_exchange)
+
+        stale_cancelled = False
+        for o in open_orders:
+            oid = str(o['order_id'])
+            if self.order_manager.is_tracked(oid):
+                o_exchange = o.get('exchange')
+                o_tif = o.get('tif')
+
+                # Check if it's an outdated session order
+                if current_desired_exchange == 'SMART' and (o_exchange == 'OVERNIGHT' or o_tif == 'DAY'):
+                    logger.info(f"Canceling stale session tracked order {oid} ({o_exchange}/{o_tif} -> {current_desired_exchange}/{current_desired_tif})")
+                    await self.broker.cancel_order(oid)
+                    stale_cancelled = True
+                # If we ever transition the other way, we'd also clean it up:
+                elif current_desired_exchange == 'OVERNIGHT' and (o_exchange == 'SMART' or o_tif == 'GTC'):
+                    logger.info(f"Canceling stale session tracked order {oid} ({o_exchange}/{o_tif} -> {current_desired_exchange}/{current_desired_tif})")
+                    await self.broker.cancel_order(oid)
+                    stale_cancelled = True
+
+        if stale_cancelled:
+            logger.info("Stale session orders canceled. Skipping Bridge Anchor and normal grid evaluations for this tick to let state settle.")
+            return
+
+        # Bridge Anchor safety invariant:
+        # Bridge Anchor must never remain live and hidden when the protective row 7 SELL is gone.
+        if self.order_manager.has_open_action(7, 'BRIDGE_BUY'):
+            row_7_sell_active = False
+            for o in open_orders:
+                oid = str(o['order_id'])
+                if oid in broker_order_ids and self.order_manager.is_tracked(oid):
+                    row, action = self.order_manager.get_row_and_action(oid)
+                    if row == 7 and action == 'SELL':
+                        row_7_sell_active = True
+                        break
+
+            if not row_7_sell_active:
+                logger.error("Bridge Anchor safety violation: Active BRIDGE_BUY found for row 7, but no actual row 7 SELL order exists at broker. Canceling BRIDGE_BUY.")
+                # Cancel the bridge buy orders
+                bridge_oids = self.order_manager.get_order_ids_for_action(7, 'BRIDGE_BUY')
+                for oid in bridge_oids:
+                    await self.broker.cancel_order(oid)
+                self.order_manager.clear_action_for_row(7, 'BRIDGE_BUY')
+                if self.grid_state and 7 in self.grid_state.rows:
+                    current_status = self.grid_state.rows[7].status
+                    new_status = _remove_status_part(current_status, 'BRIDGE_BUY:')
+                    self._update_row_status_in_memory(7, new_status)
+                    import asyncio
+                    asyncio.create_task(self._sync_to_sheet())
+                return
+
+        # Detect and cancel untracked or duplicate Bridge Anchor orders at the broker
+        bridge_like_orders = []
+        if self.grid_state and 7 in self.grid_state.rows:
+            row7_shares = self.grid_state.rows[7].shares
+            row7_sell_target = self.grid_state.rows[7].sell_price
+
+            for o in open_orders:
+                ticker = o.get('ticker', '')
+                action = o.get('action', '')
+                order_type = str(o.get('order_type', '')).upper()
+                tif = o.get('tif', '')
+                qty = o.get('qty', 0)
+                aux_price = o.get('aux_price')
+
+                if ticker == 'TQQQ' and action == 'BUY' and ('STP' in order_type or 'STOP' in order_type) and tif == 'GTC':
+                    if abs(qty - row7_shares) < 0.01:
+                        if aux_price is not None and abs(aux_price - row7_sell_target) < 0.02:
+                            bridge_like_orders.append(o)
+
+        untracked_or_duplicate_cancelled = False
+        valid_tracked_bridge_id = None
+        if self.grid_state and 7 in self.grid_state.rows:
+            status = self.grid_state.rows[7].status
+            valid_id = _extract_order_id_from_status(status, "BRIDGE_BUY:")
+            if valid_id and self.order_manager.is_tracked(valid_id):
+                valid_tracked_bridge_id = valid_id
+
+        for o in bridge_like_orders:
+            oid = str(o['order_id'])
+            if oid != valid_tracked_bridge_id:
+                logger.warning(f"Canceling untracked/stale Bridge Anchor order {oid}")
+                await self.broker.cancel_order(oid)
+                untracked_or_duplicate_cancelled = True
+
+        if untracked_or_duplicate_cancelled:
+            logger.info("Untracked/duplicate Bridge Anchors canceled. Skipping evaluations for this tick.")
+            return
+
         if broker_shares != sheet_shares:
             delta = broker_shares - sheet_shares
 
@@ -757,6 +858,7 @@ class GridEngine:
                                     if "TRIM_SELL" not in current_status:
                                         new_status = f"{current_status}|TRIM_SELL:{trim_order_id}"
                                         self._update_row_status_in_memory(7, new_status)
+                                        import asyncio
                                         asyncio.create_task(self._sync_to_sheet())
                     else:
                         msg = f"Bridge flow halted: Excess shares ({excess}) exceed bridge_max_auto_trim_shares ({self.config.bridge_max_auto_trim_shares})."
@@ -1010,7 +1112,30 @@ class GridEngine:
         exec_data["row_id"] = str(row_index) if row_index is not None else "UNKNOWN"
         exec_data["type"] = final_action
 
-        logger.info(f"Queueing execution {exec_id} for order {order_id} (row {exec_data['row_id']})")
+        if exec_data["row_id"] == "UNKNOWN":
+            # Detect suspected untracked Bridge Anchor fills
+            order_type = str(exec_data.get("order_type", "")).upper()
+            tif = exec_data.get("tif", "")
+            filled_qty = exec_data.get("filled_qty", 0)
+            aux_price = exec_data.get("aux_price")
+            side = exec_data.get("type", "")
+
+            is_bridge_suspect = False
+            if side == 'BUY' and ('STP' in order_type or 'STOP' in order_type) and tif == 'GTC':
+                if self.grid_state and 7 in self.grid_state.rows:
+                    row7_shares = self.grid_state.rows[7].shares
+                    row7_sell_target = self.grid_state.rows[7].sell_price
+                    if abs(filled_qty - row7_shares) < 0.01:
+                        if aux_price is not None and abs(aux_price - row7_sell_target) < 0.02:
+                            is_bridge_suspect = True
+
+            if is_bridge_suspect:
+                logger.critical(f"CRITICAL: Untracked Bridge Anchor order filled! OrderID: {order_id}, ExecID: {exec_id}, Side: {side}, Shares: {filled_qty}, Price: {exec_data.get('filled_price')}. This will cause a permanent share mismatch until manually resolved.")
+            else:
+                logger.warning(f"Queueing execution {exec_id} for untracked order {order_id} (row UNKNOWN).")
+        else:
+            logger.info(f"Queueing execution {exec_id} for order {order_id} (row {exec_data['row_id']})")
+
 
         # Queue the fill to be written asynchronously
         asyncio.create_task(self.sheet.log_fill(exec_data))
@@ -1064,7 +1189,11 @@ class GridEngine:
                                 parts = new_status.split('|')
                                 new_status = '|'.join([p for p in parts if not p.startswith('WORKING_SELL:')])
                         else:
-                            new_status = "IDLE"
+                            if self.grid_state and row_index in self.grid_state.rows:
+                                current_status = self.grid_state.rows[row_index].status
+                                new_status = _remove_status_part(current_status, "WORKING_SELL:")
+                            else:
+                                new_status = "IDLE"
 
                     self._update_row_status_in_memory(row_index, new_status)
 
@@ -1090,13 +1219,11 @@ class GridEngine:
                     self.row_cooldowns[row_index] = datetime.now() + timedelta(minutes=5)
                     # Revert status immediately so sheet doesn't show WORKING indefinitely if _tick is slow
                     if action == 'SELL':
-                        # Try to find existing ID or use 0
-                        owned_id = "0"
                         if self.grid_state and row_index in self.grid_state.rows:
-                            status = self.grid_state.rows[row_index].status
-                            if "OWNED:" in status:
-                                owned_id = status.split("OWNED:")[1].split("|")[0]
-                        new_status = f"OWNED:{owned_id}"
+                            current_status = self.grid_state.rows[row_index].status
+                            new_status = _remove_status_part(current_status, 'WORKING_SELL:')
+                        else:
+                            new_status = "OWNED:0"
                     elif action == 'TRIM_SELL':
                         self._bridge_state = 'BRIDGE_HALTED'
                         logger.error(f"TRIM_SELL order {order_id} errored. Halting bridge flow.")
@@ -1110,9 +1237,8 @@ class GridEngine:
                         logger.error(f"BRIDGE_BUY order {order_id} errored. Returning row 7 to WORKING_SELL and reverting bridge state.")
                         self._bridge_state = 'IDLE'
                         if self.grid_state and row_index in self.grid_state.rows:
-                            status = self.grid_state.rows[row_index].status
-                            parts = status.split('|')
-                            new_status = '|'.join([p for p in parts if not p.startswith('BRIDGE_BUY:')])
+                            current_status = self.grid_state.rows[row_index].status
+                            new_status = _remove_status_part(current_status, 'BRIDGE_BUY:')
                         else:
                             new_status = "IDLE"
                     else:
@@ -1124,12 +1250,11 @@ class GridEngine:
                 else:
                     # Cancelled explicitly
                     if action == 'SELL':
-                        owned_id = "0"
                         if self.grid_state and row_index in self.grid_state.rows:
-                            status = self.grid_state.rows[row_index].status
-                            if "OWNED:" in status:
-                                owned_id = status.split("OWNED:")[1].split("|")[0]
-                        new_status = f"OWNED:{owned_id}"
+                            current_status = self.grid_state.rows[row_index].status
+                            new_status = _remove_status_part(current_status, 'WORKING_SELL:')
+                        else:
+                            new_status = "OWNED:0"
                     elif action == 'TRIM_SELL':
                         # Trim cancelled, halt flow
                         self._bridge_state = 'BRIDGE_HALTED'
@@ -1144,9 +1269,8 @@ class GridEngine:
                         logger.info(f"BRIDGE_BUY order {order_id} cancelled explicitly. Reverting row 7 status.")
                         self._bridge_state = 'IDLE'
                         if self.grid_state and row_index in self.grid_state.rows:
-                            status = self.grid_state.rows[row_index].status
-                            parts = status.split('|')
-                            new_status = '|'.join([p for p in parts if not p.startswith('BRIDGE_BUY:')])
+                            current_status = self.grid_state.rows[row_index].status
+                            new_status = _remove_status_part(current_status, 'BRIDGE_BUY:')
                         else:
                             new_status = "IDLE"
                     else:

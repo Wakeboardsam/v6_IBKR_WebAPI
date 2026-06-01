@@ -543,7 +543,11 @@ class IBKRAdapter(BrokerBase):
                     'action': trade.order.action,
                     'qty': trade.order.totalQuantity,
                     'limit_price': trade.order.lmtPrice,
-                    'status': trade.orderStatus.status
+                    'status': trade.orderStatus.status,
+                    'aux_price': trade.order.auxPrice,
+                    'order_type': trade.order.orderType,
+                    'tif': trade.order.tif,
+                    'exchange': trade.contract.exchange
                 })
         return orders
 
@@ -594,7 +598,13 @@ class IBKRAdapter(BrokerBase):
                 "symbol": trade.contract.symbol,
                 "type": action,
                 "filled_qty": int(execution.shares),
-                "filled_price": float(execution.price)
+                "filled_price": float(execution.price),
+                "order_type": trade.order.orderType,
+                "tif": trade.order.tif,
+                "aux_price": trade.order.auxPrice,
+                "limit_price": trade.order.lmtPrice,
+                "exchange": trade.contract.exchange,
+                "action": trade.order.action
             }
 
             for callback in self._on_execution_callbacks:

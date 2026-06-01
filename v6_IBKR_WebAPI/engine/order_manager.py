@@ -41,10 +41,10 @@ class OrderManager:
         logger.info(f"Tracking {final_action} row {row_index} with order(s): {order_ids}")
 
     def has_open_buy(self, row_index: Any) -> bool:
-        return self.has_open_action(row_index, 'BUY') or (row_index in self._row_to_orders and self._row_actions.get(row_index) == "BUY")
+        return self.has_open_action(row_index, 'BUY')
 
     def has_open_sell(self, row_index: Any) -> bool:
-        return self.has_open_action(row_index, 'SELL') or (row_index in self._row_to_orders and self._row_actions.get(row_index) == "SELL")
+        return self.has_open_action(row_index, 'SELL')
 
     def has_open_action(self, row_index: Any, target_action: str) -> bool:
         if row_index not in self._row_to_orders: return False

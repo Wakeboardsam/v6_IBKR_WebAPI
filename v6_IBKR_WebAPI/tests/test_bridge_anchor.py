@@ -305,8 +305,9 @@ async def test_bridge_anchor_failed_cancel_halts(mock_broker, mock_sheet, config
     ])
     mock_broker.get_position_snapshot.return_value = PositionSnapshot(is_ready=True, positions={"TQQQ": 20})
 
+    engine.order_manager.track(7, OrderResult(order_id="ORD-SELL-7", status="submitted"), 'SELL')
     mock_broker.cancel_order.return_value = False
-    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-BRIDGE'}] # Order still active!
+    mock_broker.get_open_orders.return_value = [{'order_id': 'ORD-BRIDGE'}, {'order_id': 'ORD-SELL-7'}] # Order still active!
 
     await engine._tick()
 
