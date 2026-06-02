@@ -79,12 +79,14 @@ async def test_engine_places_sell_and_buy_limits(mock_broker, mock_sheet, config
     assert mock_broker.get_next_order_id.call_count == 2
 
     # Check SELL for row 7
-    assert engine.order_manager.has_open_sell(7)
+    sell_calls = [c for c in mock_broker.place_limit_order.mock_calls if c.kwargs.get('action') == 'SELL']
+    assert len(sell_calls) == 1
     # Status should NOT preserve OLD-ID per strict requirements in PR 6
     mock_sheet.update_row_status.assert_any_call(7, "WORKING_SELL:ORD-123")
 
     # Check BUY for row 8
-    assert engine.order_manager.has_open_buy(8)
+    buy_calls = [c for c in mock_broker.place_limit_order.mock_calls if c.kwargs.get('action') == 'BUY']
+    assert len(buy_calls) == 1
     mock_sheet.update_row_status.assert_any_call(8, "WORKING_BUY:ORD-123")
 
 @pytest.mark.asyncio
@@ -117,7 +119,7 @@ async def test_retrack_from_status(mock_broker, mock_sheet, config):
     # Should NOT place new order for row 8
     # But it should be tracked now
     assert engine.order_manager.is_tracked("ORD-EXISTING")
-    assert engine.order_manager.has_open_buy(8)
+    assert mock_broker.place_limit_order.call_count == 1 # Only the row 7 SELL should be placed
 
 @pytest.mark.asyncio
 async def test_share_mismatch_warn(mock_broker, mock_sheet, config):

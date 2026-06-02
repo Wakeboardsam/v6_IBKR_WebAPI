@@ -543,7 +543,11 @@ class IBKRAdapter(BrokerBase):
                     'action': trade.order.action,
                     'qty': trade.order.totalQuantity,
                     'limit_price': trade.order.lmtPrice,
-                    'status': trade.orderStatus.status
+                    'status': trade.orderStatus.status,
+                    'aux_price': trade.order.auxPrice,
+                    'order_type': trade.order.orderType,
+                    'tif': trade.order.tif,
+                    'exchange': trade.contract.exchange
                 })
         return orders
 
@@ -588,13 +592,19 @@ class IBKRAdapter(BrokerBase):
             action = side_map.get(execution.side, execution.side)
 
             exec_data = {
-                "exec_id": execution.execId,
-                "order_id": str(execution.orderId),
-                "perm_id": str(execution.permId),
-                "symbol": trade.contract.symbol,
+                "exec_id": getattr(execution, "execId", ""),
+                "order_id": str(getattr(execution, "orderId", "")),
+                "perm_id": str(getattr(execution, "permId", "")),
+                "symbol": getattr(trade.contract, "symbol", ""),
                 "type": action,
-                "filled_qty": int(execution.shares),
-                "filled_price": float(execution.price)
+                "filled_qty": int(getattr(execution, "shares", 0)),
+                "filled_price": float(getattr(execution, "price", 0.0)),
+                "order_type": getattr(trade.order, "orderType", None),
+                "tif": getattr(trade.order, "tif", None),
+                "aux_price": getattr(trade.order, "auxPrice", None),
+                "limit_price": getattr(trade.order, "lmtPrice", None),
+                "exchange": getattr(trade.contract, "exchange", None),
+                "action": getattr(trade.order, "action", None)
             }
 
             for callback in self._on_execution_callbacks:
