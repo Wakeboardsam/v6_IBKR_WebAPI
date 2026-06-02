@@ -652,33 +652,6 @@ class GridEngine:
             logger.info("Stale session orders canceled. Skipping Bridge Anchor and normal grid evaluations for this tick to let state settle.")
             return
 
-        # Bridge Anchor safety invariant:
-        # Bridge Anchor must never remain live and hidden when the protective row 7 SELL is gone.
-        if self.order_manager.has_open_action(7, 'BRIDGE_BUY'):
-            row_7_sell_active = False
-            for o in open_orders:
-                oid = str(o['order_id'])
-                if oid in broker_order_ids and self.order_manager.is_tracked(oid):
-                    row, action = self.order_manager.get_row_and_action(oid)
-                    if row == 7 and action == 'SELL':
-                        row_7_sell_active = True
-                        break
-
-            if not row_7_sell_active:
-                logger.error("Bridge Anchor safety violation: Active BRIDGE_BUY found for row 7, but no actual row 7 SELL order exists at broker. Canceling BRIDGE_BUY.")
-                # Cancel the bridge buy orders
-                bridge_oids = self.order_manager.get_order_ids_for_action(7, 'BRIDGE_BUY')
-                for oid in bridge_oids:
-                    await self.broker.cancel_order(oid)
-                self.order_manager.clear_action_for_row(7, 'BRIDGE_BUY')
-                if self.grid_state and 7 in self.grid_state.rows:
-                    current_status = self.grid_state.rows[7].status
-                    new_status = _remove_status_part(current_status, 'BRIDGE_BUY:')
-                    self._update_row_status_in_memory(7, new_status)
-                    import asyncio
-                    asyncio.create_task(self._sync_to_sheet())
-                return
-
         # Detect and cancel untracked or duplicate Bridge Anchor orders at the broker
         bridge_like_orders = []
         if self.grid_state and 7 in self.grid_state.rows:
@@ -716,6 +689,34 @@ class GridEngine:
         if untracked_or_duplicate_cancelled:
             logger.info("Untracked/duplicate Bridge Anchors canceled. Skipping evaluations for this tick.")
             return
+
+        # Bridge Anchor safety invariant:
+        # Bridge Anchor must never remain live and hidden when the protective row 7 SELL is gone.
+        if self.order_manager.has_open_action(7, 'BRIDGE_BUY'):
+            row_7_sell_active = False
+            for o in open_orders:
+                oid = str(o['order_id'])
+                if oid in broker_order_ids and self.order_manager.is_tracked(oid):
+                    row, action = self.order_manager.get_row_and_action(oid)
+                    if row == 7 and action == 'SELL':
+                        row_7_sell_active = True
+                        break
+
+            if not row_7_sell_active:
+                logger.error("Bridge Anchor safety violation: Active BRIDGE_BUY found for row 7, but no actual row 7 SELL order exists at broker. Canceling BRIDGE_BUY.")
+                # Cancel the bridge buy orders
+                bridge_oids = self.order_manager.get_order_ids_for_action(7, 'BRIDGE_BUY')
+                for oid in bridge_oids:
+                    await self.broker.cancel_order(oid)
+                self.order_manager.clear_action_for_row(7, 'BRIDGE_BUY')
+                if self.grid_state and 7 in self.grid_state.rows:
+                    current_status = self.grid_state.rows[7].status
+                    new_status = _remove_status_part(current_status, 'BRIDGE_BUY:')
+                    self._update_row_status_in_memory(7, new_status)
+                    import asyncio
+                    asyncio.create_task(self._sync_to_sheet())
+                return
+
 
         if broker_shares != sheet_shares:
             delta = broker_shares - sheet_shares
@@ -1189,11 +1190,7 @@ class GridEngine:
                                 parts = new_status.split('|')
                                 new_status = '|'.join([p for p in parts if not p.startswith('WORKING_SELL:')])
                         else:
-                            if self.grid_state and row_index in self.grid_state.rows:
-                                current_status = self.grid_state.rows[row_index].status
-                                new_status = _remove_status_part(current_status, "WORKING_SELL:")
-                            else:
-                                new_status = "IDLE"
+                            new_status = "IDLE"
 
                     self._update_row_status_in_memory(row_index, new_status)
 

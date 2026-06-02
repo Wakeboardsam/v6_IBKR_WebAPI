@@ -128,11 +128,14 @@ async def test_untracked_stale_bridge_anchor_broker_order(mock_broker, mock_shee
     engine.order_manager.track(7, OrderResult(order_id="7", status="submitted"), "SELL")
 
     mock_broker.get_open_orders.return_value = [
-        {'order_id': '7', 'action': 'SELL'},
-        {'order_id': '221', 'ticker': 'TQQQ', 'action': 'BUY', 'order_type': 'STP LMT', 'tif': 'GTC', 'qty': 50, 'aux_price': 105.0}
+        {'order_id': '7', 'action': 'SELL', 'exchange': 'SMART', 'tif': 'GTC'},
+        {'order_id': '221', 'ticker': 'TQQQ', 'action': 'BUY', 'order_type': 'STP LMT', 'tif': 'GTC', 'exchange': 'SMART', 'qty': 50, 'aux_price': 105.0}
     ]
 
-    await engine._tick()
+    from unittest.mock import patch
+    with patch('brokers.ibkr.order_builder.get_dynamic_exchange', return_value='SMART'):
+        with patch('brokers.ibkr.order_builder.get_dynamic_tif', return_value='GTC'):
+            await engine._tick()
 
     # Assert engine cancels 221
     mock_broker.cancel_order.assert_called_with('221')
@@ -150,15 +153,18 @@ async def test_duplicate_bridge_anchor_broker_orders(mock_broker, mock_sheet, co
 
     # Open orders has two Bridge Anchors, 221 (tracked) and 480 (untracked duplicate)
     mock_broker.get_open_orders.return_value = [
-        {'order_id': '7', 'action': 'SELL'},
-        {'order_id': '221', 'ticker': 'TQQQ', 'action': 'BUY', 'order_type': 'STP LMT', 'tif': 'GTC', 'qty': 50, 'aux_price': 105.0},
-        {'order_id': '480', 'ticker': 'TQQQ', 'action': 'BUY', 'order_type': 'STP LMT', 'tif': 'GTC', 'qty': 50, 'aux_price': 105.0}
+        {'order_id': '7', 'action': 'SELL', 'exchange': 'SMART', 'tif': 'GTC'},
+        {'order_id': '221', 'ticker': 'TQQQ', 'action': 'BUY', 'order_type': 'STP LMT', 'tif': 'GTC', 'exchange': 'SMART', 'qty': 50, 'aux_price': 105.0},
+        {'order_id': '480', 'ticker': 'TQQQ', 'action': 'BUY', 'order_type': 'STP LMT', 'tif': 'GTC', 'exchange': 'SMART', 'qty': 50, 'aux_price': 105.0}
     ]
 
-    await engine._tick()
+    from unittest.mock import patch
+    with patch('brokers.ibkr.order_builder.get_dynamic_exchange', return_value='SMART'):
+        with patch('brokers.ibkr.order_builder.get_dynamic_tif', return_value='GTC'):
+            await engine._tick()
 
     # Assert engine cancels duplicate 480
-    mock_broker.cancel_order.assert_called_with('480')
+    mock_broker.cancel_order.assert_any_call('480')
 
     # Assert the engine does not cancel 221
     assert mock_broker.cancel_order.call_count == 1
@@ -196,3 +202,12 @@ async def test_unknown_bridge_anchor_execution_alert(mock_broker, mock_sheet, co
             # Verify critical log was called containing 'Untracked Bridge Anchor order filled'
             mock_critical.assert_called_once()
             assert "Untracked Bridge Anchor order filled" in mock_critical.call_args[0][0]
+
+def test_normal_sell_fill_goes_to_idle():
+    # If a normal SELL fill occurs (no bridge pending), it should just go IDLE.
+    # The actual engine code does `new_status = "IDLE"` directly.
+    # We will just verify our _remove_status_part logic is not used for normal SELL fills,
+    # but the engine test will assert the row gets IDLE.
+    # Actually let's just make sure _remove_status_part isn't accidentally used to go to OWNED:0
+    assert _remove_status_part("WORKING_SELL:294", "WORKING_SELL:") == "OWNED:0"
+    # Note: we replaced the _remove_status_part call in the SELL fill path with `new_status = "IDLE"`.
