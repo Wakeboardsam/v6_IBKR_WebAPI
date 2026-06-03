@@ -71,7 +71,14 @@ class SheetInterface:
 
             try:
                 status = str(row_values[0]).strip() if row_values[0] else "IDLE"
-                has_y = str(row_values[1]).strip().upper() == "Y"
+                live_col_is_y = str(row_values[1]).strip().upper() == "Y"
+                status_upper = status.upper()
+
+                has_y = (
+                    live_col_is_y
+                    or status_upper.startswith("OWNED:")
+                    or status_upper.startswith("WORKING_SELL:")
+                )
                 # row_values[2] is Column E (empty or notes in legacy)
 
                 # Use robust parsing for numeric fields to handle formatted accounting cells
@@ -102,6 +109,7 @@ class SheetInterface:
     async def update_row_status(self, row_index: int, status: str):
         """Writes exclusively to Column C for the given row index."""
         await asyncio.to_thread(self._update_cell_with_guard, GRID_TAB_NAME, row_index, COL_STATUS, status)
+        logger.info(f"Successfully updated row {row_index} status to {status}")
 
     async def write_heartbeat(self, value: str):
         """Writes heartbeat to C1."""

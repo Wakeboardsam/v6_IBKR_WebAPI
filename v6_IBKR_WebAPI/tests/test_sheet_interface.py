@@ -59,6 +59,55 @@ class TestSheetInterface(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(grid_state.rows[8].has_y)
         self.assertEqual(grid_state.distal_y_row, 9)
 
+    async def test_fetch_grid_has_y_parsing(self):
+        mock_worksheet = MagicMock()
+        self.mock_sheet.worksheet.return_value = mock_worksheet
+
+        # Test cases specifically for has_y logic
+        # Columns: C(Status), D(Strategy/Live), E(Empty), F(Sell), G(Buy), H(Shares)
+        mock_worksheet.get_values.return_value = [
+            # 7: OWNED:13 + blank D -> True
+            ["OWNED:13", "", "", "105.0", "100.0", "65"],
+            # 8: WORKING_SELL:13 + blank D -> True
+            ["WORKING_SELL:13", "", "", "115.0", "110.0", "15"],
+            # 9: WORKING_BUY:13 + blank D -> False
+            ["WORKING_BUY:13", "", "", "125.0", "120.0", "20"],
+            # 10: IDLE + blank D -> False
+            ["IDLE", "", "", "135.0", "130.0", "10"],
+            # 11: IDLE + Y -> True
+            ["IDLE", "Y", "", "145.0", "140.0", "5"],
+        ]
+
+        grid_state = await self.interface.fetch_grid()
+
+        self.assertEqual(len(grid_state.rows), 5)
+
+        # 7: OWNED:13 + blank D -> True
+        row_7 = grid_state.rows[7]
+        self.assertEqual(row_7.status, "OWNED:13")
+        self.assertTrue(row_7.has_y, "OWNED should imply has_y is True")
+        self.assertEqual(row_7.shares, 65)
+
+        # 8: WORKING_SELL:13 + blank D -> True
+        row_8 = grid_state.rows[8]
+        self.assertEqual(row_8.status, "WORKING_SELL:13")
+        self.assertTrue(row_8.has_y, "WORKING_SELL should imply has_y is True")
+
+        # 9: WORKING_BUY:13 + blank D -> False
+        row_9 = grid_state.rows[9]
+        self.assertEqual(row_9.status, "WORKING_BUY:13")
+        self.assertFalse(row_9.has_y, "WORKING_BUY should NOT imply has_y is True")
+
+        # 10: IDLE + blank D -> False
+        row_10 = grid_state.rows[10]
+        self.assertEqual(row_10.status, "IDLE")
+        self.assertFalse(row_10.has_y)
+
+        # 11: IDLE + Y -> True
+        row_11 = grid_state.rows[11]
+        self.assertEqual(row_11.status, "IDLE")
+        self.assertTrue(row_11.has_y, "Explicit 'Y' in column D should mean has_y is True")
+
     async def test_update_row_status(self):
         mock_worksheet = MagicMock()
         self.mock_sheet.worksheet.return_value = mock_worksheet
